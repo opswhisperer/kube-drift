@@ -1,0 +1,6 @@
+# Default config: run on built-in defaults. Replace it from your overlay — see
+# config/example.yaml for every key.
+orphans:
+  ignore:
+    - { kind: ConfigMap, name_regex: '^istio-ca-(root-cert|crl)$', why: istiod writes these into every namespace }
+    - { kind: ConfigMap, name: cnpg-default-monitoring, why: CloudNativePG writes this into every cluster namespace }

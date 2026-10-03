@@ -1,0 +1,9 @@
+.git
+.github
+tests
+deploy
+config
+*.md
+__pycache__
+*.pyc
+drift*.json

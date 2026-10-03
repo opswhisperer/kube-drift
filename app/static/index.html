@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kube-drift</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --muted:#5f6b7a; --line:#e3e6ea;
+  --accent:#2f6fed; --accent-ink:#fff;
+  --ok:#1f7a4d; --ok-bg:#e6f4ec; --warn:#b0570e; --warn-bg:#fff1e3; --unk:#5f6b7a; --unk-bg:#eef0f3; --err:#b3261e; --err-bg:#fdecea;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1216; --panel:#171b21; --ink:#e6e8eb; --muted:#9aa4b1; --line:#2a313a;
+  --accent:#6b9cff; --accent-ink:#0f1216;
+  --ok:#5ccb8b; --ok-bg:#15301f; --warn:#f0a35c; --warn-bg:#3a2611; --unk:#9aa4b1; --unk-bg:#232932; --err:#ff7b72; --err-bg:#3b1a18;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--accent)}
+header{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:18px;margin:0;letter-spacing:.2px}
+header h1 span{color:var(--muted);font-weight:400}
+.meta{color:var(--muted);font-size:13px}
+.spacer{flex:1}
+button,.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+button:disabled{opacity:.6;cursor:default}
+main{padding:16px 20px;max-width:1500px;margin:0 auto}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer;border-left-width:4px}
+.tile.active{outline:2px solid var(--accent)}
+.tile .n{font-size:26px;font-weight:600;line-height:1.1}
+.tile .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.tile.outdated{border-left-color:var(--warn)} .tile.current{border-left-color:var(--ok)} .tile.unknown{border-left-color:var(--unk)} .tile.error{border-left-color:var(--err)} .tile.total{border-left-color:var(--accent)}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 12px;cursor:pointer;font-size:13px}
+.chip.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+input[type=search],select{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 10px;border-radius:8px;font:inherit}
+label.tog{display:inline-flex;gap:6px;align-items:center;color:var(--muted);font-size:13px}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{padding:9px 12px;text-align:left;vertical-align:top;border-top:1px solid var(--line)}
+th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;cursor:pointer;user-select:none;border-top:0;background:var(--panel);position:sticky;top:0}
+th.sorted::after{content:" ▾";color:var(--accent)} th.sorted.asc::after{content:" ▴"}
+tr.row{cursor:pointer} tr.row:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.badge.outdated{background:var(--warn-bg);color:var(--warn)} .badge.current{background:var(--ok-bg);color:var(--ok)}
+.badge.unknown{background:var(--unk-bg);color:var(--unk)} .badge.error{background:var(--err-bg);color:var(--err)}
+.name{font-weight:600} .sub{color:var(--muted);font-size:12px} code,.v{font-family:var(--mono);font-size:12.5px}
+.v.old{color:var(--warn)} .v.new{color:var(--ok)}
+.hint{color:var(--muted);font-size:12px}
+tr.detail td{background:color-mix(in srgb,var(--line) 35%,transparent);font-size:12.5px;padding:10px 12px 12px 40px}
+tr.detail dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0}
+tr.detail dt{color:var(--muted)} tr.detail dd{margin:0;word-break:break-all;font-family:var(--mono);font-size:12px}
+.empty{padding:30px;text-align:center;color:var(--muted)}
+.scanning{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);animation:p 1s infinite alternate;margin-right:6px}
+@keyframes p{from{opacity:.3}to{opacity:1}}
+.tabs{display:flex;gap:4px;margin:0 0 14px;border-bottom:1px solid var(--line)}
+.tab{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 14px;color:var(--muted);font-weight:600}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+.tab .cnt{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;background:var(--unk-bg);color:var(--unk);font-size:12px}
+.tab .cnt.hot{background:var(--warn-bg);color:var(--warn)}
+.tile.orphan{border-left-color:var(--warn)} .tile.in-use{border-left-color:var(--ok)} .tile.managed{border-left-color:var(--accent)} .tile.protected{border-left-color:var(--unk)} .tile.ignored{border-left-color:var(--line)}
+.badge.orphan{background:var(--warn-bg);color:var(--warn)} .badge.in-use{background:var(--ok-bg);color:var(--ok)}
+.badge.managed{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.badge.protected{background:var(--unk-bg);color:var(--unk)} .badge.ignored{background:var(--unk-bg);color:var(--muted);font-weight:500}
+tr.ign td{opacity:.62}
+td.ck,th.ck{width:34px;padding-right:0;cursor:default}
+.acts{white-space:nowrap;text-align:right}
+.acts button{padding:3px 9px;font-size:12.5px}
+button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 40%,var(--line))}
+.bulk{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:-4px 0 12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.bulk[hidden],.filters[hidden]{display:none}
+.tab .cnt:empty{display:none}
+.banner{padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:13px;background:var(--unk-bg);color:var(--muted)}
+.banner.err{background:var(--err-bg);color:var(--err)}
+.ev{margin:5px 0 0;padding:0;list-style:none;font-size:12.5px;color:var(--muted)}
+.ev li{display:flex;gap:8px;margin-top:3px}
+.tag{flex:none;width:80px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;line-height:1.75;color:var(--muted)}
+.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag{color:var(--accent)} .ev .leftover .tag{color:var(--warn)}
+.kor{display:flex;gap:8px}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,calc(100vw - 32px));box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(10,12,16,.45)}
+dialog form{padding:18px 20px;display:grid;gap:12px}
+dialog h2{margin:0;font-size:16px}
+dialog .body{font-size:13px;max-height:50vh;overflow:auto}
+dialog ul.list{margin:6px 0;padding-left:18px;font-family:var(--mono);font-size:12px}
+.scopes{display:grid;gap:6px;margin:10px 0 4px}
+.scopes label{display:flex;gap:8px;align-items:baseline;padding:7px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
+.scopes label:has(input:checked){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.scopes .n{margin-left:auto;color:var(--muted);font-size:12px;white-space:nowrap}
+.rules{width:100%;border:0;border-radius:0;font-size:12.5px}
+.rules td{padding:7px 6px;border-top:1px solid var(--line)}
+button.link{border:0;background:none;padding:0 2px;color:var(--accent);font-size:inherit;cursor:pointer}
+dialog pre.script{margin:8px 0 0;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
+dialog .warn{background:var(--warn-bg);color:var(--warn);padding:8px 10px;border-radius:8px;margin:8px 0;font-size:12.5px}
+dialog input[type=text],dialog input[type=password],dialog textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 10px;border-radius:8px;font:inherit}
+dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
+.toast{position:fixed;right:16px;bottom:16px;max-width:min(440px,calc(100vw - 32px));background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:10px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.25);z-index:10}
+.toast[hidden]{display:none}
+@media (max-width:800px){ .hide-sm{display:none} header{padding:12px 16px} main{padding:12px 16px}
+  #o-table th,#o-table td{padding:8px 6px} #o-table .name{overflow-wrap:anywhere}
+  .acts{white-space:normal;width:72px} .acts button{display:block;width:100%;margin:0 0 4px} }
+</style>
+</head>
+<body>
+<header>
+  <h1>kube-drift <span id="cluster"></span></h1>
+  <div class="meta" id="meta">loading…</div>
+  <div class="spacer"></div>
+  <a class="btn" id="csv" href="/api/drift.csv">CSV</a>
+  <a class="btn" id="json" href="/api/drift" target="_blank">JSON</a>
+  <button class="primary" id="rescan">Rescan now</button>
+</header>
+<main>
+  <nav class="tabs" role="tablist">
+    <button class="tab on" data-view="versions" role="tab">Version drift <span class="cnt" id="cnt-versions"></span></button>
+    <button class="tab" data-view="orphans" role="tab">Orphaned resources <span class="cnt" id="cnt-orphans"></span></button>
+  </nav>
+  <section id="v-versions">
+  <div class="tiles" id="tiles"></div>
+  <div class="filters">
+    <span class="chip on" data-cat="">All</span>
+    <span class="chip" data-cat="cluster">Cluster</span>
+    <span class="chip" data-cat="node">Nodes</span>
+    <span class="chip" data-cat="helm">Helm releases</span>
+    <span class="chip" data-cat="manifest">Manifests</span>
+    <span class="chip" data-cat="helm-workload">Helm-managed workloads</span>
+    <select id="ns"><option value="">all namespaces</option></select>
+    <input type="search" id="q" placeholder="search name / image / version…">
+    <label class="tog"><input type="checkbox" id="drift"> drift only</label>
+    <span class="hint" id="count"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th data-k="status" style="width:90px">Status</th>
+      <th data-k="name">Component</th>
+      <th data-k="installed">Installed</th>
+      <th data-k="latest">Available</th>
+      <th data-k="install" class="hide-sm">Install</th>
+      <th class="hide-sm">Reference</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  </section>
+
+  <section id="v-orphans" hidden>
+  <div id="o-banner"></div>
+  <div class="tiles" id="o-tiles"></div>
+  <div class="filters">
+    <select id="o-kind"><option value="">all kinds</option></select>
+    <select id="o-ns"><option value="">all namespaces</option></select>
+    <input type="search" id="o-q" placeholder="search name / reason…">
+    <label class="tog"><input type="checkbox" id="o-showign"> show ignored</label>
+    <button class="link" id="o-rules">ignore rules</button>
+    <span class="hint" id="o-count"></span>
+  </div>
+  <div class="bulk" id="o-bulk" hidden>
+    <strong id="o-selcount"></strong>
+    <button data-bulk="ignore">Ignore</button>
+    <button data-bulk="unignore">Unignore</button>
+    <button data-bulk="export">Export command</button>
+    <button data-bulk="delete" class="danger">Delete command</button>
+    <span class="spacer"></span>
+    <button data-bulk="clear">Clear selection</button>
+  </div>
+  <table id="o-table">
+    <thead><tr>
+      <th class="ck"><input type="checkbox" id="o-all" aria-label="select all shown"></th>
+      <th data-ok="status" style="width:110px">Status</th>
+      <th data-ok="name">Resource</th>
+      <th data-ok="reason" class="hide-sm">Why it's flagged</th>
+      <th data-ok="created" class="hide-sm" style="width:80px">Age</th>
+      <th style="width:1%"></th>
+    </tr></thead>
+    <tbody id="o-rows"></tbody>
+  </table>
+  </section>
+</main>
+
+<dialog id="dlg"><form method="dialog" id="dlg-form">
+  <h2 id="dlg-title"></h2>
+  <div class="body" id="dlg-body"></div>
+  <div class="row"><button value="ok" id="dlg-ok" class="primary">OK</button><button value="cancel" id="dlg-cancel" formnovalidate>Cancel</button></div>
+</form></dialog>
+<div class="toast" id="toast" hidden></div>
+<script>
+const $ = s => document.querySelector(s);
+const state = { data:null, cat:'', ns:'', q:'', drift:false, sort:'status', asc:true, open:new Set() };
+const ost = { data:null, view:'versions', tile:'', kind:'', ns:'', q:'', showIgn:false, sort:'status', asc:true, sel:new Set() };
+const ORDER = { outdated:0, error:1, unknown:2, current:3 };
+const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm-managed workload' };
+
+function rel(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso))/1000; if(s<60) return 'just now';
+  if(s<3600) return Math.round(s/60)+' min ago'; if(s<86400) return Math.round(s/3600)+' h ago'; return Math.round(s/86400)+' d ago'; }
+function until(iso){ if(!iso) return ''; const s=(new Date(iso)-Date.now())/1000; return s<=0?'soon':(s<3600?Math.round(s/60)+' min':Math.round(s/3600*10)/10+' h'); }
+function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function installedCell(c){
+  let main = c.running_version ? c.running_version : c.installed;
+  let bits = [`<span class="v ${c.status==='outdated'?'old':''}">${esc(main)}</span>`];
+  if(c.running_version) bits.push(`<div class="sub">tag <code>${esc(c.installed)}</code> · probed</div>`);
+  else if(c.category==='helm' && c.installed_app) bits.push(`<div class="sub">app ${esc(c.installed_app)}</div>`);
+  else if(c.floating) bits.push(`<div class="sub">floating tag${c.digest_current===true?' · image current':c.digest_current===false?' · newer image behind tag':''}</div>`);
+  return bits.join('');
+}
+function latestCell(c){
+  if(!c.latest) return `<span class="hint">${c.error?'lookup failed':(c.source&&c.source.type==='none'?'not tracked':'unknown')}</span>`;
+  let bits = [`<span class="v ${c.status==='outdated'?'new':''}">${esc(c.latest)}</span>`];
+  if(c.category==='helm' && c.latest_app) bits.push(`<div class="sub">app ${esc(c.latest_app)}</div>`);
+  if(c.latest_any && c.latest_any!==c.latest) bits.push(`<div class="sub">newer track: ${esc(c.latest_any)}</div>`);
+  return bits.join('');
+}
+function refCell(c){
+  const links=[]; if(c.ref) links.push(`<a href="${esc(c.ref)}" target="_blank" rel="noopener">${esc(host(c.ref))}</a>`);
+  if(c.ref_ah && c.ref_ah!==c.ref) links.push(`<a href="${esc(c.ref_ah)}" target="_blank" rel="noopener">artifacthub</a>`);
+  return links.join(' · ') || '<span class="hint">—</span>';
+}
+function host(u){ try{ const h=new URL(u).hostname.replace(/^www\./,''); const p=new URL(u).pathname.split('/').filter(Boolean); return h==='github.com'&&p.length>=2?`github ${p[0]}/${p[1]}`:h; }catch{ return u; } }
+
+function showCluster(name){ if(!name) return; $('#cluster').textContent='· '+name; document.title='kube-drift · '+name; }
+function render(){
+  const d=state.data; if(!d) return;
+  showCluster(d.cluster);
+  if(ost.view==='versions') $('#meta').innerHTML = (d.scanning?'<span class="scanning"></span>scanning… ':'')+
+    (d.scanned_at?`last scan ${rel(d.scanned_at)} (${d.duration_s}s)`:'no scan yet')+
+    (d.next_scan_at&&!d.scanning?` · next in ${until(d.next_scan_at)}`:'')+
+    (d.last_error?` · <span style="color:var(--err)">last error: ${esc(d.last_error)}</span>`:'');
+  if(ost.view==='versions') $('#rescan').disabled=!!d.scanning;
+  const out=(d.summary||{}).outdated||0; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
+  const all=d.components||[];
+  // tiles
+  const s=d.summary||{}; const tiles=[['outdated','Outdated'],['current','Current'],['unknown','Unknown'],['error','Errors'],['total','Components']];
+  $('#tiles').innerHTML=tiles.filter(([k])=>k==='total'||s[k]).map(([k,l])=>`<div class="tile ${k} ${state.tile===k?'active':''}" data-t="${k}"><div class="n">${s[k]||0}</div><div class="l">${l}</div></div>`).join('');
+  // namespaces
+  const nsSel=$('#ns'); const cur=nsSel.value; const nss=[...new Set(all.map(c=>c.namespace))].sort();
+  nsSel.innerHTML='<option value="">all namespaces</option>'+nss.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
+  // filter
+  let rows=all.filter(c=>{
+    if(state.cat? c.category!==state.cat : c.category==='helm-workload') return false;
+    if(state.ns && c.namespace!==state.ns) return false;
+    if(state.tile && state.tile!=='total' && c.status!==state.tile) return false;
+    if(state.drift && c.status!=='outdated') return false;
+    if(state.q){ const h=[c.name,c.namespace,c.image,c.installed,c.latest,c.running_version,c.note].join(' ').toLowerCase(); if(!h.includes(state.q)) return false; }
+    return true;
+  });
+  const k=state.sort; rows.sort((a,b)=>{ let x=k==='status'?ORDER[a.status]??9:(a[k]||''), y=k==='status'?ORDER[b.status]??9:(b[k]||'');
+    if(x<y) return state.asc?-1:1; if(x>y) return state.asc?1:-1; return (a.namespace+a.name).localeCompare(b.namespace+b.name); });
+  $('#count').textContent=`${rows.length} shown`;
+  document.querySelectorAll('th[data-k]').forEach(th=>{ th.classList.toggle('sorted',th.dataset.k===k); th.classList.toggle('asc',state.asc); });
+  $('#rows').innerHTML = rows.length? rows.map(c=>{
+    const open=state.open.has(c.id);
+    const row=`<tr class="row" data-id="${esc(c.id)}">
+      <td><span class="badge ${c.status}">${c.status}</span></td>
+      <td><div class="name">${esc(c.name)}</div><div class="sub">${esc(c.namespace)}${c.kind?' · '+esc(c.kind):''}${c.note?' · '+esc(c.note):''}</div></td>
+      <td>${installedCell(c)}</td><td>${latestCell(c)}</td>
+      <td class="hide-sm"><span class="sub">${esc(c.install)}</span></td><td class="hide-sm">${refCell(c)}</td></tr>`;
+    if(!open) return row;
+    const dl=[['id',c.id],['category',CAT[c.category]||c.category],['image',c.image],['source',JSON.stringify(c.source)],['running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['registry digest',c.remote_digest],['probe',c.probe_error||(c.running_version?'ok':'')],['error',c.error],['checked',c.checked_at]]
+      .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+    return row+`<tr class="detail"><td colspan="6"><dl>${dl}</dl></td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">nothing matches</td></tr>';
+}
+
+async function load(){ try{ const r=await fetch('/api/drift',{cache:'no-store'}); state.data=await r.json(); render(); }catch(e){ $('#meta').textContent='cannot reach API: '+e; } }
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#v-versions')) return;
+  const chip=e.target.closest('.chip'); if(chip){ document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c===chip)); state.cat=chip.dataset.cat; render(); return; }
+  const tile=e.target.closest('.tile'); if(tile){ state.tile=state.tile===tile.dataset.t?'':tile.dataset.t; render(); return; }
+  const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); return; }
+  const row=e.target.closest('tr.row'); if(row && !e.target.closest('a')){ const id=row.dataset.id; state.open.has(id)?state.open.delete(id):state.open.add(id); render(); }
+});
+$('#ns').addEventListener('change',e=>{ state.ns=e.target.value; render(); });
+$('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
+$('#drift').addEventListener('change',e=>{ state.drift=e.target.checked; render(); });
+$('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+ost.view,{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
+
+/* ------------------------------------------------------------------ orphaned resources */
+const OORDER = { orphan:0, managed:1, 'in-use':2, protected:3, ignored:4 };
+const OTILES = [['orphan','Orphaned'],['in-use','In use · kor missed it'],['managed','Managed · would come back'],['protected','Protected'],['ignored','Ignored']];
+const BADGE = { 'in-use':['in use','Something uses it that kor does not check — kor is wrong here'], managed:['managed','Its owner would put it back if you deleted it'],
+  orphan:['orphan','Nothing uses or manages it'], protected:['protected','Never offered a delete command'], ignored:['ignored','Hidden from the counts'] };
+const TAG = { 'in-use':'In use', recreated:'Recreated', leftover:'Leftover', gone:'Gone?' };
+function age(iso){ if(!iso) return '—'; const d=(Date.now()-new Date(iso))/86400000; return d<1?Math.max(1,Math.round(d*24))+'h':d<60?Math.round(d)+'d':Math.round(d/30)+'mo'; }
+function ostatus(i){ return i.ignored?'ignored':i.status; }
+function toast(msg,ms=5000){ const t=$('#toast'); t.innerHTML=msg; t.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>t.hidden=true,ms); }
+
+function modal({title, body, ok='OK', input=null}){
+  const dlg=$('#dlg'); $('#dlg-title').textContent=title;
+  $('#dlg-body').innerHTML=body+(input?`<div style="margin-top:10px">${input}</div>`:'');
+  const okb=$('#dlg-ok'); okb.textContent=ok||''; okb.className='primary'; okb.hidden=!ok;
+  $('#dlg-cancel').textContent=ok?'Cancel':'Close';
+  okb.disabled=false;
+  // resolve on submit/cancel rather than `close`, which browsers defer while the page is hidden
+  return new Promise(res=>{
+    const form=$('#dlg-form'), done=v=>{ form.onsubmit=dlg.oncancel=null; const f=$('#dlg-field'); res(v==='ok'?{ok:true,value:f?f.value:''}:{ok:false}); };
+    form.onsubmit=e=>done(e.submitter?e.submitter.value:'ok'); dlg.oncancel=()=>done('cancel');
+    dlg.showModal(); ($('#dlg-field')||$('#dlg-copy')||okb).focus({preventScroll:true}); $('#dlg-body').scrollTop=0; });
+}
+
+async function call(path, body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){ let m=r.statusText; try{ m=(await r.json()).error||m; }catch{} throw new Error(m); }
+  return r.json();
+}
+async function copyText(text){
+  try{ await navigator.clipboard.writeText(text); return true; }
+  catch{ const r=document.createRange(); r.selectNodeContents($('#dlg-script')); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); return false; }
+}
+function byId(id){ return (ost.data?.items||[]).find(i=>i.id===id); }
+function label(i){ return `${i.kind} ${i.namespace?i.namespace+'/':''}${i.name}`; }
+
+/* ---- ignore rules: same matching as app/orphans.py rule_match ---- */
+const SRC = { gateway:'used by a Gateway (TLS)', 'cert-manager-issuer':'used by a cert-manager issuer', 'cert-manager':'issued by cert-manager',
+  helm:'owned by an installed Helm release', 'helm-leftover':'left over from an uninstalled Helm release', argocd:'managed by Argo CD' };
+const srcText=x=>SRC[x]||(x.startsWith('managed-by:')?'managed by '+x.slice(11):x);
+const plural=k=>/(s|x)$/.test(k)?k+'es':/[^aeiou]y$/.test(k)?k.slice(0,-1)+'ies':k+'s';
+function describeRule(r){
+  return [r.kind?plural(r.kind):'Anything', r.source?srcText(r.source):'', r.namespace?`in ${r.namespace}`:'',
+    r.name?`named ${r.name}`:'', r.name_regex?`named /${r.name_regex}/`:''].filter(Boolean).join(' ');
+}
+function matchRule(r,i){
+  if(r.kind && r.kind!==i.kind) return false;
+  if(r.namespace && r.namespace!==i.namespace) return false;
+  if(r.name && r.name!==i.name) return false;
+  if(r.source && !(i.hints||[]).some(h=>h.source===r.source)) return false;
+  if(r.name_regex){ try{ if(!new RegExp(r.name_regex).test(i.name)) return false; }catch{ return false; } }
+  return true;
+}
+function suggestRules(items){
+  const out=[], seen=new Set(), add=r=>{ const k=JSON.stringify(r); if(!seen.has(k)){ seen.add(k); out.push(r); } };
+  const kinds=new Set(items.map(i=>i.kind)), nss=new Set(items.map(i=>i.namespace));
+  const common=[...new Set((items[0].hints||[]).map(h=>h.source))].filter(x=>x && x!=='gone' && items.every(i=>(i.hints||[]).some(h=>h.source===x)));
+  const kind=kinds.size===1?[...kinds][0]:null, ns=nss.size===1?[...nss][0]:null;
+  for(const x of common){ if(kind) add({kind, source:x}); add({source:x}); }
+  if(kind && ns) add({kind, namespace:ns});
+  if(ns) add({namespace:ns});
+  return out.slice(0,5);
+}
+async function doIgnore(ids){
+  const items=ids.map(byId).filter(Boolean); if(!items.length) return;
+  const all=ost.data.items||[], n=items.length;
+  const scopes=[{label:n===1?'Only this resource':`Only these ${n} resources`, rule:null, count:n}]
+    .concat(suggestRules(items).map(r=>({label:describeRule(r), rule:r, count:all.filter(i=>matchRule(r,i)).length})))
+    // "Anything <source>" only earns a row when it reaches more than "<Kind>s <source>"
+    .filter((x,k,a)=>!(x.rule && !x.rule.kind && x.rule.source && a.some(y=>y.rule?.kind && y.rule.source===x.rule.source && y.count===x.count)));
+  const r=await modal({title:`Ignore ${n===1?label(items[0]):n+' resources'}`, ok:'Ignore',
+    body:`<p>Ignored resources are hidden from the counts until you unignore them. A rule also covers matching resources found in later scans.</p>
+      <div class="scopes">${scopes.map((x,k)=>`<label><input type="radio" name="scope" value="${k}" ${k?'':'checked'}><span>${esc(x.label)}</span><span class="n">${x.count} now</span></label>`).join('')}</div>`,
+    input:'<input type="text" id="dlg-field" placeholder="note (optional) — why is this fine?">'});
+  if(!r.ok) return;
+  const pick=scopes[+(document.querySelector('input[name=scope]:checked')?.value||0)];
+  if(pick.rule){ await call('/api/orphans/rules',{rule:pick.rule,note:r.value}); toast(`Rule added: ${esc(pick.label)} (${pick.count})`); }
+  else { const res=await call('/api/orphans/ignore',{ids,note:r.value}); toast(`Ignored ${res.ignored}`); }
+  ost.sel.clear(); await loadO();
+}
+function ruleOf(i){ return (ost.data.rules||[]).find(r=>r.id===i.ignored?.rule); }
+async function showRules(){
+  const rules=ost.data.rules||[];
+  const rows=rules.map(r=>`<tr><td><div>${esc(describeRule(r))}</div><div class="sub">${r.from==='config'?'config file':'added '+rel(r.at)}${r.note?' — '+esc(r.note):''}</div></td>
+    <td class="sub" style="white-space:nowrap">${r.matches} match${r.matches===1?'':'es'}</td>
+    <td>${r.from==='dashboard'?`<button type="button" data-rule-del="${esc(r.id)}">Remove</button>`:''}</td></tr>`).join('');
+  await modal({title:'Ignore rules', ok:null, body:rules.length?`<p>Resources matching a rule are hidden from the counts. Add one from <b>Ignore</b> on any resource. Config rules are edited in the config file.</p><table class="rules">${rows}</table>`
+    :'<p>No rules yet. Choose <b>Ignore</b> on a resource to ignore it, or everything like it.</p>'});
+}
+document.addEventListener('click',e=>{
+  const del=e.target.closest('[data-rule-del]'); if(!del) return;
+  run(async()=>{ await call('/api/orphans/rules/delete',{id:del.dataset.ruleDel}); await loadO(); $('#dlg').close(); toast('Rule removed'); showRules(); });
+});
+async function doUnignore(ids){ const res=await call('/api/orphans/unignore',{ids}); ost.sel.clear(); toast(`Unignored ${res.unignored}`); await loadO(); }
+async function doCommands(ids, action){
+  const items=ids.map(byId).filter(Boolean);
+  const res=await call('/api/orphans/commands',{ids,action});
+  const used=items.filter(i=>!res.skipped.some(x=>x.id===i.id)); const kinds=new Set(used.map(i=>i.kind));
+  const warns=[];
+  if(action==='delete'){
+    const inUse=used.filter(i=>i.status==='in-use'), managed=used.filter(i=>i.status==='managed');
+    if(inUse.length) warns.push(`${inUse.length} are in use by something kor doesn't check (e.g. a Gateway's TLS certificate) — deleting breaks it.`);
+    if(managed.length) warns.push(`${managed.length} would be put back by their owner (Helm, cert-manager, an operator) — remove them there instead.`);
+    if(kinds.has('PersistentVolumeClaim')||kinds.has('PersistentVolume')) warns.push('Volumes: the backup is the manifest only, not the data. A PV with reclaimPolicy Delete loses its data.');
+    if(kinds.has('CustomResourceDefinition')) warns.push('Deleting a CRD deletes every object of that type.');
+  }
+  if(kinds.has('Secret')) warns.push('Secret backups contain the secret data; the script writes them with mode 600.');
+  const n=used.length, what=action==='delete'?'Back up and delete':'Export';
+  const body=!res.script?'<p>Nothing to do for this selection.</p>':
+    `<p>${action==='delete'?'Each object is saved to a local JSON file, then deleted — only if its backup succeeded.':'Saves each object to a local JSON file.'} Server-owned fields are stripped, so <code>kubectl apply -f</code> restores them. Run it in a terminal with access to the cluster; needs <code>kubectl</code> and <code>jq</code>.</p>`+
+    warns.map(w=>`<div class="warn">${esc(w)}</div>`).join('')+
+    (res.skipped.length?`<p class="hint">Skipped: ${res.skipped.map(x=>esc(x.id)+' ('+esc(x.why)+')').join(', ')}</p>`:'')+
+    `<div style="margin-top:10px"><button type="button" class="primary" id="dlg-copy">Copy command</button> <span class="hint" id="dlg-copied"></span></div><pre class="script" id="dlg-script">${esc(res.script)}</pre>`;
+  const p=modal({title:`${what} ${n} resource${n===1?'':'s'}`, ok:null, body});
+  const cb=$('#dlg-copy'); if(cb) cb.addEventListener('click',async()=>{ const ok=await copyText(res.script);
+    $('#dlg-copied').textContent=ok?(action==='delete'?'Copied — run it, then Rescan here.':'Copied.'):'Selected — press ⌘C / Ctrl+C.'; });
+  await p;
+}
+function renderO(){
+  const d=ost.data; if(!d) return;
+  if(ost.view==='orphans'){
+    $('#meta').innerHTML=(d.scanning?'<span class="scanning"></span>scanning with kor… ':'')+(d.scanned_at?`last orphan scan ${rel(d.scanned_at)} (${d.duration_s}s)`:(d.scanning?'':'no orphan scan yet'))+
+      (d.kor_version?` · kor ${esc(d.kor_version)}`:'')+(d.next_scan_at&&!d.scanning?` · next in ${until(d.next_scan_at)}`:'')+
+      (d.last_error?` · <span style="color:var(--err)">last error: ${esc(d.last_error)}</span>`:'');
+    $('#rescan').disabled=!!d.scanning;
+  }
+  const s=d.summary||{}; $('#cnt-orphans').textContent=s.orphan||''; $('#cnt-orphans').classList.toggle('hot',(s.orphan||0)>0);
+  const ro=!d.ignore_enabled;
+  $('#o-banner').innerHTML=(ro?`<div class="banner">Ignores can't be saved: the data directory isn't writable.</div>`:'')+
+    ((d.warnings||[]).length?`<details class="banner"><summary>${d.warnings.length} scan warning(s)</summary><ul>${d.warnings.map(w=>`<li><code>${esc(w)}</code></li>`).join('')}</ul></details>`:'');
+  $('#o-tiles').innerHTML=OTILES.map(([k,l])=>`<div class="tile ${k} ${ost.tile===k?'active':''}" data-ot="${k}"><div class="n">${s[k]||0}</div><div class="l">${l}</div></div>`).join('');
+  const all=d.items||[];
+  const nsKey=i=>i.namespace||'(cluster-scoped)';
+  const fill=(sel,vals,label)=>{ const cur=sel.value; sel.innerHTML=`<option value="">${label}</option>`+vals.map(v=>`<option ${v===cur?'selected':''}>${esc(v)}</option>`).join(''); };
+  fill($('#o-kind'),[...new Set(all.map(i=>i.kind))].sort(),'all kinds');
+  fill($('#o-ns'),[...new Set(all.map(nsKey))].sort(),'all namespaces');
+  const showIgn=ost.showIgn||ost.tile==='ignored';
+  let rows=all.filter(i=>{
+    const st=ostatus(i);
+    if(st==='ignored' && !showIgn) return false;
+    if(ost.tile && st!==ost.tile) return false;
+    if(ost.kind && i.kind!==ost.kind) return false;
+    if(ost.ns && nsKey(i)!==ost.ns) return false;
+    if(ost.q){ const h=[i.kind,i.namespace,i.name,i.reason,(i.hints||[]).map(h=>h.text).join(' '),i.ignored?.note].join(' ').toLowerCase(); if(!h.includes(ost.q)) return false; }
+    return true;
+  });
+  const k=ost.sort; rows.sort((a,b)=>{ let x=k==='status'?OORDER[ostatus(a)]:(a[k]||''), y=k==='status'?OORDER[ostatus(b)]:(b[k]||'');
+    if(k==='created'){ x=a.created||'9'; y=b.created||'9'; }
+    if(x<y) return ost.asc?-1:1; if(x>y) return ost.asc?1:-1; return (a.kind+a.namespace+a.name).localeCompare(b.kind+b.namespace+b.name); });
+  const ids=new Set(all.map(i=>i.id)); [...ost.sel].forEach(id=>{ if(!ids.has(id)) ost.sel.delete(id); });
+  $('#o-count').textContent=`${rows.length} shown`;
+  document.querySelectorAll('th[data-ok]').forEach(th=>{ th.classList.toggle('sorted',th.dataset.ok===k); th.classList.toggle('asc',ost.asc); });
+  $('#o-all').checked=rows.length>0 && rows.every(i=>ost.sel.has(i.id));
+  $('#o-bulk').hidden=!ost.sel.size; $('#o-selcount').textContent=`${ost.sel.size} selected`;
+  $('#o-rows').innerHTML=rows.length?rows.map(i=>{
+    const st=ostatus(i), ign=!!i.ignored;
+    const ev=(i.hints||[]).map(h=>[h.type,TAG[h.type]||h.type,h.text]);
+    if(i.protected) ev.push(['protected','Protected',i.protected]);
+    if(ign){ const rr=ruleOf(i);
+      ev.push(['ignored','Ignored',(rr?`by ${i.ignored.by==='config'?'config ':''}rule “${describeRule(rr)}”`:rel(i.ignored.at))+(i.ignored.note?' — '+i.ignored.note:'')]); }
+    const why=(i.reason?`<div class="kor"><span class="tag" title="what kor reported">kor</span><span>${esc(i.reason)}</span></div>`:'')+
+      (ev.length?`<ul class="ev">${ev.map(([t,l,x])=>`<li class="${t}"><span class="tag">${esc(l)}</span><span>${esc(x)}</span></li>`).join('')}</ul>`:'');
+    const acts=[ro?'':ign?(i.ignored.by==='dashboard'?`<button data-act="unignore">Unignore</button>`:`<button data-act="rules">Rule…</button>`):`<button data-act="ignore">Ignore</button>`,
+      i.known_kind?`<button data-act="export" title="command to export as JSON">Export</button>`:'',
+      i.known_kind && i.status!=='protected'?`<button data-act="delete" class="danger" title="command to back up and delete">Delete</button>`:''].join(' ');
+    return `<tr class="${ign?'ign':''}" data-oid="${esc(i.id)}">
+      <td class="ck"><input type="checkbox" data-sel ${ost.sel.has(i.id)?'checked':''} aria-label="select ${esc(label(i))}"></td>
+      <td><span class="badge ${st}" title="${esc((BADGE[st]||[])[1]||'')}">${esc((BADGE[st]||[st])[0])}</span></td>
+      <td><div class="name">${esc(i.name)}</div><div class="sub">${esc(i.kind)}${i.namespace?' · '+esc(i.namespace):' · cluster-scoped'}</div></td>
+      <td class="hide-sm">${why}</td>
+      <td class="hide-sm"><span class="sub" title="${esc(i.created||'')}">${age(i.created)}</span></td>
+      <td class="acts">${acts}</td></tr>`;
+  }).join(''):`<tr><td colspan="6" class="empty">${d.scanned_at?'nothing matches':(d.scanning?'kor is scanning the cluster — this takes a few minutes':'no scan yet')}</td></tr>`;
+}
+
+async function loadO(){ try{ const r=await fetch('/api/orphans',{cache:'no-store'}); ost.data=await r.json(); renderO(); }catch(e){ if(ost.view==='orphans') $('#meta').textContent='cannot reach API: '+e; } }
+function dispatch(a, ids){ return a==='ignore'?doIgnore(ids):a==='unignore'?doUnignore(ids):a==='rules'?showRules():doCommands(ids,a); }
+async function run(fn){ try{ await fn(); }catch(e){ toast('Failed: '+esc(e.message||e),8000); } }
+
+function setView(v){
+  ost.view=v; document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.view===v));
+  $('#v-versions').hidden=v!=='versions'; $('#v-orphans').hidden=v!=='orphans';
+  $('#csv').hidden=v!=='versions'; $('#json').href=v==='versions'?'/api/drift':'/api/orphans';
+  try{ history.replaceState(null,'',v==='orphans'?'#orphans':location.pathname); }catch{}
+  v==='versions'?render():renderO();
+}
+document.addEventListener('click',e=>{
+  const tab=e.target.closest('.tab'); if(tab){ setView(tab.dataset.view); return; }
+  if(!e.target.closest('#v-orphans')) return;
+  const t=e.target.closest('[data-ot]'); if(t){ ost.tile=ost.tile===t.dataset.ot?'':t.dataset.ot; renderO(); return; }
+  const th=e.target.closest('th[data-ok]'); if(th){ if(ost.sort===th.dataset.ok) ost.asc=!ost.asc; else { ost.sort=th.dataset.ok; ost.asc=true; } renderO(); return; }
+  const act=e.target.closest('[data-act]'); if(act){ const id=act.closest('tr').dataset.oid;
+    run(()=>dispatch(act.dataset.act,[id])); return; }
+  const bulk=e.target.closest('[data-bulk]'); if(bulk){ const ids=[...ost.sel];
+    if(bulk.dataset.bulk==='clear'){ ost.sel.clear(); renderO(); return; }
+    run(()=>dispatch(bulk.dataset.bulk,ids)); return; }
+});
+document.addEventListener('change',e=>{
+  if(e.target.matches('[data-sel]')){ const id=e.target.closest('tr').dataset.oid; e.target.checked?ost.sel.add(id):ost.sel.delete(id); renderO(); }
+  else if(e.target.id==='o-all'){ document.querySelectorAll('#o-rows tr[data-oid]').forEach(tr=>{ e.target.checked?ost.sel.add(tr.dataset.oid):ost.sel.delete(tr.dataset.oid); }); renderO(); }
+  else if(e.target.id==='o-kind'){ ost.kind=e.target.value; renderO(); }
+  else if(e.target.id==='o-ns'){ ost.ns=e.target.value; renderO(); }
+  else if(e.target.id==='o-showign'){ ost.showIgn=e.target.checked; renderO(); }
+});
+$('#o-rules').addEventListener('click',()=>run(showRules));
+$('#o-q').addEventListener('input',e=>{ ost.q=e.target.value.trim().toLowerCase(); renderO(); });
+
+if(location.hash==='#orphans') setView('orphans');
+load(); loadO(); setInterval(()=>{ load(); loadO(); }, 60000);
+</script>
+</body>
+</html>

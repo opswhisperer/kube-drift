@@ -1,0 +1,22 @@
+# kube-drift in its own namespace, read-only against the cluster.
+#   kubectl apply -k deploy/base
+#   kubectl -n kube-drift port-forward svc/kube-drift 8080:80   → http://localhost:8080
+# Customise with an overlay (see the README): namespace, image, config, ingress.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kube-drift
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+configMapGenerator:
+  # The name gets a content hash, so a config change rolls the pod.
+  - name: kube-drift-config
+    files:
+      - config.yaml
+images:
+  - name: kube-drift
+    newName: ghcr.io/opswhisperer/kube-drift
+    newTag: latest

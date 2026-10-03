@@ -1,0 +1,14 @@
+# Ignores, ignore rules and the last scans. Uses the cluster's default StorageClass.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kube-drift-data
+  namespace: kube-drift
+  labels:
+    app.kubernetes.io/name: kube-drift
+    app.kubernetes.io/part-of: kube-drift
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

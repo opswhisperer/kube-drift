@@ -1,0 +1,8 @@
+kube-drift
+Copyright 2026 Robert Bell
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The container image also includes third-party software under its own license:
+  kor (https://github.com/yonahd/kor) — MIT License, /usr/share/licenses/kor/LICENSE
+  PyYAML (https://pyyaml.org) — MIT License, in its site-packages dist-info

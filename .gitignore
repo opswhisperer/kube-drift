@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+drift*.json
+.DS_Store
+
+# Site-specific overlays (e.g. your own cluster) — kept out of the repo
+deploy/*
+!deploy/base/

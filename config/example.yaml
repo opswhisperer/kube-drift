@@ -1,0 +1,110 @@
+# kube-drift configuration — every key is optional; an empty file works.
+#
+# Mounted at /config/config.yaml (env CONFIG). deploy/base generates the ConfigMap from a file
+# like this one; replace it from your own overlay (see the README).
+
+# Shown in the dashboard header.
+cluster_name: my-cluster
+
+# How often to rescan versions (env SCAN_INTERVAL_HOURS overrides).
+scan_interval_hours: 6
+
+# ============================================================================ version drift
+#
+# Without configuration kube-drift already finds everything: Helm releases are looked up on
+# ArtifactHub by chart name, and images are compared against newer tags in their registry.
+# The keys below fix the cases where the guess is wrong or a better source exists.
+
+# Helm releases. Key: "release@namespace", "release", or the chart name (first match wins).
+#   source.type:
+#     artifacthub         { repo, chart }        a specific ArtifactHub repository
+#     artifacthub-search  { chart }              best match by chart name (the default)
+#     oci                 { ref }                chart tags in an OCI registry
+#     github              { repo, version_regex, prefer_tags }  GitHub releases (or tags)
+#     none                                       don't look up
+#   ref:   link shown in the Reference column
+#   track: any (default) | major | minor — only offer versions within the installed major/minor
+helm:
+  # cert-manager:  { source: { type: artifacthub, repo: cert-manager, chart: cert-manager } }
+  # my-gateway@gw: { source: { type: oci, ref: docker.io/envoyproxy/gateway-helm }, ref: https://github.com/envoyproxy/gateway/releases }
+
+# Container images. Key: "host/repo", "repo" (Docker Hub), or "re:<regex>" matched against both.
+#   name:   display name instead of the workload name
+#   ref:    link shown in the Reference column
+#   track:  any | major | minor
+#   source: { type: none } to stop looking up an image that has no public tags
+#   loose_suffix: true to also accept tags whose suffix differs (default: true for `registries`)
+#   note:   free text shown under the name
+images:
+  # mongo:                        { track: major }
+  # registry.k8s.io/kube-proxy:   { track: minor, ref: https://kubernetes.io/releases/ }
+  # 're:^quay.io/acme-private/':  { source: { type: none }, note: vendor-managed image }
+
+# Apps on floating tags (latest, main…) that expose their real version over HTTP.
+#   json: dotted path into the JSON response, or regex: first capture group of the body
+#   source: where newer versions come from (as in `helm` above); headers: extra request headers
+probes:
+  # - namespace: n8n
+  #   name: n8n
+  #   url: http://n8n.n8n.svc:5678/rest/settings
+  #   json: data.versionCli
+  #   source: { type: github, repo: n8n-io/n8n, version_regex: 'n8n@(\d+\.\d+\.\d+)' }
+
+# Workloads to leave out: { namespace, name, name_regex } — every field set must match.
+ignore:
+  # - { namespace: default, name: debug-shell }
+
+# Image regexes to leave out (sidecars that only add noise).
+ignore_images:
+  # - '^quay.io/kiwigrid/k8s-sidecar'
+
+# Collapse generated workloads into one row: { label, namespace, name, name_regex }.
+groups:
+  # - { label: Envoy Gateway data plane, namespace: envoy-gateway-system, name_regex: '^envoy-(?!gateway$)' }
+
+# Private registries. insecure: plain HTTP. auth_env: env var holding "user:password".
+registries:
+  # "registry.local:5000": { insecure: true, auth_env: LOCAL_REGISTRY_AUTH }
+
+# Where node container runtime versions come from (default: GitHub containerd/containerd).
+runtimes:
+  # containerd: { type: github, repo: containerd/containerd, track: major }
+
+# Namespaces whose static pods (kubeadm control plane, kube-vip…) count as cluster components.
+# static_pod_namespaces: [kube-system]
+
+# ============================================================================ orphaned resources
+orphans:
+  enabled: true
+  interval_hours: 6
+
+  # --context for the export/delete commands the dashboard generates.
+  # kubectl_context: my-cluster
+
+  # kor subcommands to run. Default: everything `kor all` checks except crd (slow — it lists
+  # every object of every CRD — and noisy with operator-installed CRDs).
+  # resources: [configmap, secret, service, serviceaccount, deployment, statefulset, daemonset,
+  #             replicaset, job, pod, pvc, pv, ingress, hpa, pdb, role, rolebinding, clusterrole,
+  #             clusterrolebinding, networkpolicy, storageclass, priorityclass, volumeattachment]
+
+  # Extra kor flags. --ignore-owner-references: anything with an owner is garbage-collected
+  # with it, so it is never really orphaned. --older-than: don't flag things mid-rollout.
+  kor_args: [--ignore-owner-references, --older-than=1h]
+
+  exclude_namespaces: []
+
+  # Ignore rules. Fields: kind, namespace, name, name_regex, source — every field set must match.
+  # `source` is the evidence kube-drift found: cert-manager, gateway, cert-manager-issuer, helm,
+  # helm-leftover, argocd, managed-by:<name>. Rules can also be added from the dashboard.
+  ignore:
+    - { kind: ConfigMap, name_regex: '^istio-ca-(root-cert|crl)$', why: istiod writes these into every namespace }
+    - { kind: ConfigMap, name: cnpg-default-monitoring, why: CloudNativePG writes this into every cluster namespace }
+    # - { kind: Secret, source: cert-manager, why: cert-manager owns its certificates }
+
+  # Never offered a delete command (same rule shape). Always protected, whatever this says:
+  # system:*/kubeadm:* objects, kubeadm ConfigMaps, kube-root-ca.crt, and kube-drift itself.
+  protect:
+    - { kind: Secret, namespace: cert-manager, why: cert-manager issuer and webhook keys }
+
+  # Namespace for ClusterIssuer secrets (cert-manager's --cluster-resource-namespace).
+  # cert_manager_namespace: cert-manager
