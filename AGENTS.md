@@ -12,6 +12,8 @@ check against the fixture cluster.
   don't add API calls that create, patch or delete cluster objects. POST endpoints may only
   change kube-drift's own state (ignores, rules, rescans).
 - **Never return Secret data** from the API or dashboard — names only.
+- **API changes update `app/openapi.py`** (served at `/openapi.json`, rendered at `/docs`).
+  `tests/test_openapi.py` fails if a route or a response field isn't documented.
 - **A new API read needs RBAC**: add the resource to `deploy/base/rbac.yaml` (get/list).
 - **Changing the shape of an orphan scan result** (`OrphanScanner.run` in `app/orphans.py`)
   means bumping `FORMAT` there; otherwise a deployed pod crashes on the scan it saved before

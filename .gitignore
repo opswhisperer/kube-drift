@@ -7,3 +7,4 @@ drift*.json
 # Site-specific overlays (e.g. your own cluster) — kept out of the repo
 deploy/*
 !deploy/base/
+app/static/swagger-ui/

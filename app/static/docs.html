@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kube-drift API</title>
+<link rel="stylesheet" href="/docs/swagger-ui.css">
+<style>
+  body { margin: 0; background: #fff; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .bar { display: flex; gap: 16px; align-items: center; padding: 14px 20px; border-bottom: 1px solid #e3e6ea; }
+  .bar a { color: #2f6fed; text-decoration: none; }
+  .bar .spacer { flex: 1; }
+  .swagger-ui .topbar { display: none; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <strong>kube-drift API</strong>
+  <span class="spacer"></span>
+  <a href="/openapi.json">openapi.json</a>
+  <a href="/">← dashboard</a>
+</div>
+<div id="ui"></div>
+<script src="/docs/swagger-ui-bundle.js"></script>
+<script>
+  window.ui = SwaggerUIBundle({ url: '/openapi.json', dom_id: '#ui', deepLinking: true, defaultModelsExpandDepth: 0 });
+</script>
+</body>
+</html>

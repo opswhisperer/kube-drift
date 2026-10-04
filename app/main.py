@@ -27,6 +27,7 @@ from pathlib import Path
 import yaml
 
 from . import orphans
+from .openapi import SPEC
 from .k8s import K8s
 from .scan import Scanner, now_iso
 from .store import Store
@@ -40,6 +41,11 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "/tmp/drift.json"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CLUSTER = {"name": os.environ.get("CLUSTER_NAME", "")}  # set from config in main()
 MAX_BODY = 1 << 20
+# Swagger UI for /docs: bundled into the image (Dockerfile); from source, the same version on a CDN.
+SWAGGER_UI_VERSION = "5.33.1"
+SWAGGER_DIR = STATIC / "swagger-ui"
+SWAGGER_ASSETS = {"swagger-ui-bundle.js": "application/javascript", "swagger-ui.css": "text/css"}
+API_LINKS = '</openapi.json>; rel="service-desc", </docs>; rel="service-doc"'  # RFC 8631
 
 
 def load_config() -> dict:
@@ -226,8 +232,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (extra or {}).items():
+        headers = {"Cache-Control": "no-store", **({"Link": API_LINKS} if self.path.startswith("/api/") else {}), **(extra or {})}
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -244,6 +250,17 @@ class Handler(BaseHTTPRequestHandler):
                        {"Content-Disposition": "attachment; filename=kube-drift.csv"})
         elif path == "/api/orphans":
             self._send(200, json.dumps(ORPHANS.snapshot()).encode())
+        elif path == "/openapi.json":
+            self._send(200, json.dumps(SPEC).encode())
+        elif path == "/docs":
+            self._send(200, (STATIC / "docs.html").read_bytes(), "text/html; charset=utf-8")
+        elif path.startswith("/docs/") and path[6:] in SWAGGER_ASSETS:
+            name = path[6:]
+            if (SWAGGER_DIR / name).is_file():
+                self._send(200, (SWAGGER_DIR / name).read_bytes(), SWAGGER_ASSETS[name] + "; charset=utf-8",
+                           {"Cache-Control": "public, max-age=86400"})
+            else:
+                self._send(302, b"", "text/plain", {"Location": f"https://cdn.jsdelivr.net/npm/swagger-ui-dist@{SWAGGER_UI_VERSION}/{name}"})
         elif path in ("/healthz", "/readyz"):
             ok = path == "/healthz" or STATE.result is not None or STATE.scanning
             self._send(200 if ok else 503, b'{"ok":true}' if ok else b'{"ok":false}')

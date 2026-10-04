@@ -6,3 +6,5 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 The container image also includes third-party software under its own license:
   kor (https://github.com/yonahd/kor) — MIT License, /usr/share/licenses/kor/LICENSE
   PyYAML (https://pyyaml.org) — MIT License, in its site-packages dist-info
+  Swagger UI (https://github.com/swagger-api/swagger-ui) — Apache License 2.0,
+    /srv/app/static/swagger-ui/LICENSE and NOTICE

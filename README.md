@@ -163,6 +163,10 @@ secret data and are written with mode 600. A PVC or PV backup is the manifest, n
 
 ## API
 
+Described by OpenAPI 3.1 at `/openapi.json`, with an interactive reference at `/docs` (also the
+**API** button in the dashboard). API responses carry `Link: </openapi.json>; rel="service-desc"`,
+so tools and agents can discover it from any endpoint.
+
 | | |
 |---|---|
 | `GET /api/drift` | version scan (JSON) |
@@ -173,6 +177,7 @@ secret data and are written with mode 600. A PVC or PV backup is the manifest, n
 | `POST /api/orphans/rules`, `/rules/delete` | `{rule, note}`, `{id}` |
 | `POST /api/orphans/commands` | `{ids, action: export\|delete}` → `{script, skipped}` |
 | `GET /healthz`, `/readyz` | liveness; readiness (503 until the first version scan) |
+| `GET /openapi.json`, `/docs` | this API, as OpenAPI 3.1 and as Swagger UI |
 
 Environment: `CONFIG` (`/config/config.yaml`), `CLUSTER_NAME` (overrides the config),
 `SCAN_INTERVAL_HOURS`, `DATA_DIR` (`/data`), `GITHUB_TOKEN`, plus any `auth_env` you name under
@@ -211,5 +216,5 @@ tests/           unit tests, plus a snapshot of a real cluster for offline runs
 
 ## License
 
-[Apache License 2.0](LICENSE). The image bundles [kor](https://github.com/yonahd/kor) and
-PyYAML, both MIT-licensed; see [NOTICE](NOTICE).
+[Apache License 2.0](LICENSE). The image bundles [kor](https://github.com/yonahd/kor) (MIT),
+PyYAML (MIT) and [Swagger UI](https://github.com/swagger-api/swagger-ui) (Apache-2.0); see [NOTICE](NOTICE).

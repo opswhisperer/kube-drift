@@ -18,6 +18,19 @@ RUN set -eu; \
     mkdir -p /usr/share/licenses/kor; \
     tar -xzf /tmp/kor.tar.gz -O LICENSE > /usr/share/licenses/kor/LICENSE
 
+# Swagger UI for /docs (github.com/swagger-api/swagger-ui), from the npm swagger-ui-dist package.
+FROM python:3.12-slim AS swagger
+ARG SWAGGER_UI_VERSION=5.33.1
+ARG SWAGGER_UI_SHA256=b468ff5f49451f194a739bc245c85b28c7d3d33057a8409a9b2369da37e215b9
+RUN set -eu; \
+    python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], "/tmp/swagger.tgz")' \
+      "https://registry.npmjs.org/swagger-ui-dist/-/swagger-ui-dist-${SWAGGER_UI_VERSION}.tgz"; \
+    echo "${SWAGGER_UI_SHA256}  /tmp/swagger.tgz" | sha256sum -c -; \
+    mkdir /swagger-ui; \
+    tar -xzf /tmp/swagger.tgz -C /swagger-ui --strip-components=1 \
+      package/swagger-ui-bundle.js package/swagger-ui.css package/LICENSE package/NOTICE \
+      package/swagger-ui-bundle.js.LICENSE.txt
+
 FROM python:3.12-slim
 
 RUN groupadd -g 1001 kubedrift && useradd -u 1001 -g 1001 -M -s /usr/sbin/nologin kubedrift
@@ -29,6 +42,7 @@ COPY --from=kor /usr/local/bin/kor /usr/local/bin/kor
 COPY --from=kor /usr/share/licenses/kor/LICENSE /usr/share/licenses/kor/LICENSE
 WORKDIR /srv
 COPY --chmod=644 app/ ./app/
+COPY --from=swagger --chmod=644 /swagger-ui/ ./app/static/swagger-ui/
 RUN find /srv -type d -exec chmod 755 {} +
 
 # No config is baked in: mount one at $CONFIG (see config/example.yaml), or run on defaults.
