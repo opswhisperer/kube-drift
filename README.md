@@ -29,44 +29,69 @@ for `linux/amd64` and `linux/arm64`.
 
 ## Configure
 
-With no configuration kube-drift already finds everything: Helm charts are looked up on
-ArtifactHub by name, and images are compared with newer tags in their own registry. Configuration
-fixes the guesses that are wrong and hides noise. [`config/example.yaml`](config/example.yaml)
-documents every key.
+kube-drift needs no configuration to start: it finds every release, workload and orphan on its
+own, looks Helm charts up on ArtifactHub by name, and compares images with newer tags in their
+registry. Add a config file when the dashboard shows you something wrong or noisy:
 
-Put your config in a Kustomize overlay:
+| On the dashboard | Add to `config.yaml` |
+|---|---|
+| A Helm release is **unknown**, or "Available" belongs to a different chart | `helm:` — where that chart is really published |
+| "Available" is a major upgrade you can't take yet | `track: major` on that image (`images:`) or release (`helm:`) |
+| An app on `latest`/`main` only says "newer image behind tag" | `probes:` — ask the app for its version over HTTP |
+| Images from your own registry show errors | `registries:` — plain HTTP, credentials |
+| Rows you'll never act on | `ignore:` (workloads), `ignore_images:` (sidecars), `groups:` (many generated copies → one row) |
+| Orphans that are fine | `orphans.ignore:` — or **Ignore** in the dashboard |
+
+[`config/example.yaml`](config/example.yaml) explains each key with examples. Copy it, keep what
+you need.
+
+### Applying your config
+
+The config is a file called `config.yaml` that Kustomize turns into the ConfigMap kube-drift
+reads. Make a directory with two files:
 
 ```yaml
-# kustomization.yaml
+# my-kube-drift/kustomization.yaml
 resources:
-  - https://github.com/opswhisperer/kube-drift//deploy/base?ref=main
+  - https://github.com/opswhisperer/kube-drift//deploy/base?ref=main   # kube-drift itself
 configMapGenerator:
-  - name: kube-drift-config
+  - name: kube-drift-config     # replace the base's default config…
     behavior: replace
     files:
-      - config.yaml
+      - config.yaml             # …with this file
 ```
 
 ```yaml
-# config.yaml
-cluster_name: prod-eu
+# my-kube-drift/config.yaml
+cluster_name: prod-eu                # shown in the dashboard header
+
 helm:
-  cert-manager: { source: { type: artifacthub, repo: cert-manager, chart: cert-manager } }
+  # the ArtifactHub search for "postgresql" picked the wrong chart; this release is Bitnami's
+  db: { source: { type: artifacthub, repo: bitnami, chart: postgresql } }
+
 images:
-  mongo: { track: major }        # only offer 8.x while 8.x is installed
+  mongo: { track: major }            # we're staying on MongoDB 8 for now: don't offer 9
+
+ignore:
+  - { namespace: default, name: debug-shell }   # a scratch pod, not worth tracking
+
 orphans:
-  kubectl_context: prod-eu       # --context in the generated cleanup commands
+  kubectl_context: prod-eu           # the cleanup commands it writes target this context
   ignore:
     - { kind: Secret, source: cert-manager, why: cert-manager owns its certificates }
 ```
 
-`kubectl apply -k .` — the ConfigMap name carries a content hash, so a config change restarts
-the pod. The same overlay can move kube-drift to another namespace (`namespace:`, plus a
-`$patch: delete` for the base's Namespace), pull from a private registry (`images:`, and a patch
-adding `imagePullSecrets`), and add your Ingress or Gateway.
+Then `kubectl apply -k my-kube-drift/`. To change the config, edit `config.yaml` and apply again;
+the pod restarts by itself (the ConfigMap's name includes a hash of its contents).
 
-Optional: a `kube-drift-credentials` Secret with `github-token` raises the GitHub API limit from
-60 to 5000 requests an hour (Helm charts and probes that use GitHub releases).
+The same directory is where the rest of your customisation goes: another namespace
+(`namespace:`, plus a `$patch: delete` for the base's Namespace), your own image build
+(`images:`, and a patch adding `imagePullSecrets`), and an Ingress or Gateway.
+
+Optional: a Secret named `kube-drift-credentials` in kube-drift's namespace with a
+`github-token` key raises the GitHub API limit from 60 to 5000 requests an hour, for chart and
+probe lookups that use GitHub releases. Private-registry credentials are covered under
+`registries:` in [`config/example.yaml`](config/example.yaml).
 
 ### Exposing it
 
@@ -170,10 +195,6 @@ kubectl proxy &
 KUBE_API=http://127.0.0.1:8001 CONFIG=config/example.yaml DATA_DIR=/tmp/kube-drift \
   python3 -m app.main                 # http://localhost:8080
 ```
-
-`./build.sh [tag]` runs the tests and pushes a multi-arch image (`IMAGE`, `PLATFORMS` override
-the defaults). CI runs the tests on every push; a `v*` tag publishes
-`ghcr.io/opswhisperer/kube-drift:<version>` and `:latest`.
 
 ```
 app/main.py      HTTP server, scan schedulers, ignore/rule/command endpoints
