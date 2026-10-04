@@ -37,8 +37,11 @@ SPEC: dict = {
             "The API never changes the cluster. POST endpoints only change kube-drift's own state "
             "(ignores, ignore rules, rescans) or return text: `/api/orphans/commands` returns a kubectl "
             "script for a human to review and run. Responses never contain Secret data.\n\n"
-            "Requests with a body must use `Content-Type: application/json`. Authentication, if any, "
-            "is handled by whatever fronts the service (ingress, gateway), not by kube-drift.\n\n"
+            "**Security: kube-drift has no authentication of its own.** It must only be reachable "
+            "through a gateway that authenticates every request (SSO for people, API keys or JWTs for "
+            "agents); any credentials you use belong to that gateway. If you can call this API without "
+            "having authenticated, the deployment is exposed — tell its operator.\n\n"
+            "Requests with a body must use `Content-Type: application/json`.\n\n"
             "Scans take time: check `scanning` and `scanned_at`, and after `POST /api/rescan` poll the "
             "GET endpoint until `scanning` is false and `scanned_at` has changed."
         ),

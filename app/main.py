@@ -405,6 +405,8 @@ def main():
         threading.Thread(target=orphan_loop, args=(cfg,), daemon=True, name="orphans").start()
     port = int(os.environ.get("PORT", "8080"))
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    log.warning("kube-drift has no authentication: expose it only through a gateway that "
+                "authenticates every request (README: 'Exposing it')")
     log.info("listening on :%d", port)
     srv.serve_forever()
 

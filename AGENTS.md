@@ -12,6 +12,8 @@ check against the fixture cluster.
   don't add API calls that create, patch or delete cluster objects. POST endpoints may only
   change kube-drift's own state (ignores, rules, rescans).
 - **Never return Secret data** from the API or dashboard — names only.
+- **No authentication in the app, by design.** It must sit behind a gateway that authenticates
+  every request; don't add logins or API keys here, and keep the README/OpenAPI warnings.
 - **API changes update `app/openapi.py`** (served at `/openapi.json`, rendered at `/docs`).
   `tests/test_openapi.py` fails if a route or a response field isn't documented.
 - **A new API read needs RBAC**: add the resource to `deploy/base/rbac.yaml` (get/list).

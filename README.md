@@ -11,6 +11,11 @@ A dashboard for the two kinds of drift a long-lived Kubernetes cluster collects:
 It runs in the cluster, rescans on a timer, and is **read-only**: it never changes the cluster.
 Cleanup is a kubectl script it writes for you to review and run.
 
+> [!WARNING]
+> **kube-drift has no authentication.** Anyone who can reach it can read your cluster's full
+> inventory and change its ignore list. Never expose it directly: use `kubectl port-forward`, or
+> put it behind a gateway that authenticates every request. See [Exposing it](#exposing-it).
+
 ![Version drift](docs/versions.png)
 ![Orphaned resources](docs/orphans.png)
 
@@ -21,7 +26,7 @@ kubectl apply -k 'https://github.com/opswhisperer/kube-drift//deploy/base?ref=ma
 kubectl -n kube-drift port-forward svc/kube-drift 8080:80
 ```
 
-Open <http://localhost:8080>. The first version scan takes under a minute; the orphan scan a few
+Open <http://localhost:8080> — port-forward is safe because only you can reach it. The first version scan takes under a minute; the orphan scan a few
 minutes (kor lists every kind in every namespace).
 
 You need a default StorageClass (kube-drift keeps its state on a 1Gi PVC). Images are published
@@ -95,9 +100,28 @@ probe lookups that use GitHub releases. Private-registry credentials are covered
 
 ### Exposing it
 
-The dashboard has no login. Its only writes are its own state (ignores and rescans), but it shows
-your cluster's inventory, so keep it on port-forward or put it behind your ingress's
-authentication (oauth2-proxy, an identity-aware proxy, a VPN…).
+> [!CAUTION]
+> kube-drift has **no login, no API keys and no access control**, by design: authentication
+> belongs in the gateway in front of it. Whoever can reach the service can:
+>
+> - read everything it reports: every workload, image, version and Helm release, and the names
+>   of your Secrets, ConfigMaps, RoleBindings and other resources, which maps out your cluster
+>   for an attacker;
+> - change its state: ignore findings, add or remove ignore rules, start scans.
+>
+> It never changes the cluster and never returns Secret data, but the inventory alone is
+> sensitive. **Only make it reachable through a gateway that authenticates every request.**
+
+What that looks like:
+
+- **People:** single sign-on in front of it: oauth2-proxy, your ingress controller's OIDC
+  support (Envoy Gateway and Istio have it built in), or an identity-aware proxy.
+- **Agents and scripts:** API keys or JWTs checked by the same gateway (for example an Envoy
+  Gateway `SecurityPolicy`).
+- **Inside the cluster:** the gateway is the front door, but any pod can call the Service
+  directly. Add a NetworkPolicy that only admits traffic from your gateway's namespace.
+- **Not enough on their own:** an unauthenticated Ingress or LoadBalancer, an IP allowlist, or
+  a hostname nobody knows. A VPN is fine if everyone on it should see your cluster's inventory.
 
 ## Version drift
 
@@ -152,6 +176,7 @@ secret data and are written with mode 600. A PVC or PV backup is the manifest, n
 
 ## Security
 
+- **No authentication** — put it behind an authenticating gateway; see [Exposing it](#exposing-it).
 - **Read-only RBAC**: `get`/`list` on what the scans read, cluster-wide. That includes Secrets:
   Helm stores releases as Secrets, and kor checks whether Secrets are used. Kubernetes RBAC
   can't limit a list to one Secret type or label. Remove `secret` from `orphans.resources` to
