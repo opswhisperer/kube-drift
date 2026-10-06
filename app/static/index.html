@@ -43,6 +43,8 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
 th,td{padding:9px 12px;text-align:left;vertical-align:top;border-top:1px solid var(--line)}
 th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;cursor:pointer;user-select:none;border-top:0;background:var(--panel);position:sticky;top:0}
 th.sorted::after{content:" ▾";color:var(--accent)} th.sorted.asc::after{content:" ▴"}
+tr.grp td{background:var(--bg);font-weight:600;cursor:pointer;user-select:none;padding:7px 12px}
+tr.grp .tw{display:inline-block;width:14px;color:var(--muted)} tr.grp .sub{font-weight:400;margin-left:8px}
 tr.row{cursor:pointer} tr.row:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
 .badge.outdated{background:var(--warn-bg);color:var(--warn)} .badge.current{background:var(--ok-bg);color:var(--ok)}
@@ -129,6 +131,17 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
     <span class="chip" data-cat="manifest">Manifests</span>
     <span class="chip" data-cat="helm-workload">Helm-managed workloads</span>
     <select id="ns"><option value="">all namespaces</option></select>
+    <select id="group" aria-label="group by">
+      <option value="">no grouping</option>
+      <option value="namespace">group by namespace</option>
+      <option value="category">group by type</option>
+      <option value="status">group by status</option>
+      <option value="update">group by update size</option>
+      <option value="install">group by install method</option>
+      <option value="owner">group by GitHub owner</option>
+      <option value="image_host">group by registry</option>
+      <option value="tagstyle">group by tag style</option>
+    </select>
     <input type="search" id="q" placeholder="search name / image / version…">
     <label class="tog"><input type="checkbox" id="drift"> drift only</label>
     <span class="hint" id="count"></span>
@@ -188,7 +201,8 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 <div class="toast" id="toast" hidden></div>
 <script>
 const $ = s => document.querySelector(s);
-const state = { data:null, cat:'', ns:'', q:'', drift:false, sort:'status', asc:true, open:new Set() };
+const state = { data:null, cat:'', ns:'', q:'', drift:false, group:'', shut:new Set(), sort:'status', asc:true, open:new Set() };
+try{ state.group=localStorage.getItem('kd.group')||''; }catch{}
 const ost = { data:null, view:'versions', tile:'', kind:'', ns:'', q:'', showIgn:false, sort:'status', asc:true, sel:new Set() };
 const ORDER = { outdated:0, error:1, unknown:2, current:3 };
 const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm-managed workload' };
@@ -250,7 +264,7 @@ function render(){
     if(x<y) return state.asc?-1:1; if(x>y) return state.asc?1:-1; return (a.namespace+a.name).localeCompare(b.namespace+b.name); });
   $('#count').textContent=`${rows.length} shown`;
   document.querySelectorAll('th[data-k]').forEach(th=>{ th.classList.toggle('sorted',th.dataset.k===k); th.classList.toggle('asc',state.asc); });
-  $('#rows').innerHTML = rows.length? rows.map(c=>{
+  const rowHtml = c=>{
     const open=state.open.has(c.id);
     const row=`<tr class="row" data-id="${esc(c.id)}">
       <td><span class="badge ${c.status}">${c.status}</span></td>
@@ -261,7 +275,37 @@ function render(){
     const dl=[['id',c.id],['category',CAT[c.category]||c.category],['image',c.image],['source',JSON.stringify(c.source)],['running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['registry digest',c.remote_digest],['probe',c.probe_error||(c.running_version?'ok':'')],['error',c.error],['checked',c.checked_at]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
     return row+`<tr class="detail"><td colspan="6"><dl>${dl}</dl></td></tr>`;
-  }).join('') : '<tr><td colspan="6" class="empty">nothing matches</td></tr>';
+  };
+  $('#rows').innerHTML = !rows.length? '<tr><td colspan="6" class="empty">nothing matches</td></tr>'
+    : !state.group? rows.map(rowHtml).join('') : groupRows(rows).map(([key,items])=>{
+      const shut=state.shut.has(key), out=state.group==='status'||state.group==='update'?0:items.filter(c=>c.status==='outdated').length;
+      const label=state.group==='category'?CAT[key]||key:key||GROUP_NONE[state.group]||'—';
+      return `<tr class="grp" data-g="${esc(key)}"><td colspan="6"><span class="tw">${shut?'▸':'▾'}</span>${esc(label)}<span class="sub">${items.length}${out?` · ${out} outdated`:''}</span></td></tr>`
+        +(shut?'':items.map(rowHtml).join(''));
+    }).join('');
+}
+const GROUP_NONE = { update:'not outdated', owner:'not on GitHub', image_host:'not an image', tagstyle:'not an image' };
+const GROUP_ORDER = { status:ORDER, update:{ major:0, minor:1, patch:2, other:3 } };
+const GROUP_KEY = { update:updateSize, owner:ghOwner, tagstyle:c=>c.category==='helm'?'chart version':!c.image_host?'':c.pinned_digest?'pinned digest':c.floating?'floating tag':'version tag' };
+// Which version part an outdated component has to move: major, minor or patch; "other" when the
+// versions aren't numeric (floating tags) or differ only past the patch number.
+function updateSize(c){
+  if(c.status!=='outdated') return '';
+  const num=v=>{ const m=/\d+(?:\.\d+)*/.exec(v||''); return m?m[0].split('.').map(Number):null; };
+  const a=num(c.running_version||c.installed), b=num(c.latest);
+  if(!a||!b) return 'other';
+  return ['major','minor','patch'].find((_,i)=>(a[i]||0)!==(b[i]||0))||'other';
+}
+// GitHub org/user behind a component: its GitHub release source, else a github.com reference link, else a ghcr.io image.
+function ghOwner(c){
+  if(c.source?.type==='github' && c.source.repo) return c.source.repo.split('/')[0].toLowerCase();
+  for(const u of [c.ref,c.ref_ah]){ const m=/^https?:\/\/(?:www\.)?github\.com\/([^/?#]+)/i.exec(u||''); if(m) return m[1].toLowerCase(); }
+  return c.image_host==='ghcr.io' && c.image_repo? c.image_repo.split('/')[0].toLowerCase() : '';
+}
+// Buckets the already-sorted rows by the group-by field; rows keep their sort order inside a group.
+function groupRows(rows){
+  const g=new Map(); rows.forEach(c=>{ const k=(GROUP_KEY[state.group]?GROUP_KEY[state.group](c):c[state.group])??''; if(!g.has(k)) g.set(k,[]); g.get(k).push(c); });
+  return [...g].sort(([a],[b])=>(!a-!b)||(GROUP_ORDER[state.group]?(GROUP_ORDER[state.group][a]??9)-(GROUP_ORDER[state.group][b]??9):0)||String(a).localeCompare(String(b)));
 }
 
 async function load(){ try{ const r=await fetch('/api/drift',{cache:'no-store'}); state.data=await r.json(); render(); }catch(e){ $('#meta').textContent='cannot reach API: '+e; } }
@@ -270,9 +314,12 @@ document.addEventListener('click',e=>{
   const chip=e.target.closest('.chip'); if(chip){ document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c===chip)); state.cat=chip.dataset.cat; render(); return; }
   const tile=e.target.closest('.tile'); if(tile){ state.tile=state.tile===tile.dataset.t?'':tile.dataset.t; render(); return; }
   const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); return; }
+  const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); return; }
   const row=e.target.closest('tr.row'); if(row && !e.target.closest('a')){ const id=row.dataset.id; state.open.has(id)?state.open.delete(id):state.open.add(id); render(); }
 });
 $('#ns').addEventListener('change',e=>{ state.ns=e.target.value; render(); });
+$('#group').value=state.group;
+$('#group').addEventListener('change',e=>{ state.group=e.target.value; state.shut.clear(); try{ localStorage.setItem('kd.group',state.group); }catch{} render(); });
 $('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
 $('#drift').addEventListener('change',e=>{ state.drift=e.target.checked; render(); });
 $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+ost.view,{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
