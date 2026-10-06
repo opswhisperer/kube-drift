@@ -9,7 +9,7 @@ to the cluster.
 
 Env: PORT (8080), CONFIG (/config/config.yaml; YAML or JSON, optional), CLUSTER_NAME (overrides
 config), POD_NAMESPACE (kube-drift's own namespace, protected), SCAN_INTERVAL_HOURS (overrides config),
-STATE_FILE (/tmp/drift.json), DATA_DIR (/data: ignores, last orphan scan), KOR_BIN (kor), KOR_KUBECONFIG,
+STATE_FILE (/tmp/drift.json), DATA_DIR (/data: ignores, last orphan scan, image label cache), KOR_BIN (kor), KOR_KUBECONFIG,
 GITHUB_TOKEN (optional), LOCAL_REGISTRY_AUTH (user:pass, optional),
 KUBE_API / KUBE_TOKEN (out-of-cluster dev, e.g. `kubectl proxy`).
 """
@@ -159,7 +159,7 @@ def scan_loop(cfg: dict):
         with STATE.lock:
             STATE.scanning = True
         try:
-            scanner = Scanner(K8s(), cfg)
+            scanner = Scanner(K8s(), cfg, DATA_DIR)
             result = scanner.run()
             with STATE.lock:
                 STATE.result, STATE.last_error = result, None

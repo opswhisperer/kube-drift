@@ -53,6 +53,7 @@ helm:
 #   - "Available" is a major version you can't move to yet   → track: major (or minor)
 #   - an image from a private vendor registry shows an error → source: { type: none }
 #   - the row's name or link isn't helpful                   → name, ref, note
+#   - the Reference link is missing or for the wrong project → ref
 #
 # Key: the image without its tag — "host/path" ("ghcr.io/org/app"), just the path for Docker Hub
 # ("mongo", "grafana/grafana"), or "re:<regex>" to cover many images at once.
@@ -60,7 +61,9 @@ helm:
 #   track:   major | minor, as for helm
 #   source:  { type: none } to stop looking up newer tags
 #   name:    show this instead of the workload's name
-#   ref:     the link in the Reference column (default: the image's registry page)
+#   ref:     the link in the Reference column. Default: the image's own OCI labels (source repo's
+#            releases page, else documentation, else url) when they name the image's project;
+#            else its registry page on Docker Hub, GHCR, Quay, ECR Public, registry.k8s.io, lscr.io
 #   note:    text shown under the name
 #   loose_suffix: true if every build gets a new suffix (1.4.2-a1b2c3-r1), so tags are compared
 #            by their version part only. On by default for images from `registries` below.

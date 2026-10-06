@@ -195,12 +195,14 @@ SPEC: dict = {
             "pinned_digest": {"type": ["string", "null"]}, "running_digests": {"type": "array", "items": {"type": "string"}},
             "remote_digest": {"type": ["string", "null"]},
             "digest_current": {"type": "boolean", "description": "The running image is the tag's current image."},
-            "ref": {"type": "string", "description": "Where to read release notes."},
+            "ref": {"type": "string", "description": "Where to read release notes: the config's `ref`, else for images "
+                    "the source repo's releases page (or docs/home page) from the image's OCI labels, else its registry page. "
+                    "Empty when none is known."},
             "ref_ah": {"type": "string", "description": "ArtifactHub page, when ref is elsewhere."},
             "note": {"type": "string"}, "error": {"type": "string"}, "probe_error": {"type": "string"}, "digest_error": {"type": "string"},
             "source": {"type": "object", "description": "Where the available version came from (see config)."},
             "probe_source": {"type": ["object", "null"]}, "first_party": {"type": "boolean"}, "loose_suffix": {"type": "boolean"},
-            "ref_overridden": {"type": "boolean"}, "updated": {"type": "string"}, "checked_at": {"type": "string", "format": "date-time"},
+            "ref_overridden": {"type": "boolean", "description": "ref was set in config or by a probe, not discovered."}, "updated": {"type": "string"}, "checked_at": {"type": "string", "format": "date-time"},
         }},
         "OrphanScan": {"allOf": [{"$ref": "#/components/schemas/ScanState"}, {"type": "object", "properties": {
             "format": {"type": "integer", "description": "Shape version of the scan result."},

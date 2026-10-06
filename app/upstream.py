@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import json
 import logging
 import os
 import re
@@ -31,6 +32,17 @@ HOST_ALIASES = {
 _token_lock = threading.Lock()
 _tokens: dict[str, str] = {}
 
+# OCI labels by image digest. A digest's content never changes, so this outlives scans (and is
+# saved under DATA_DIR): a manifest GET counts against Docker Hub's anonymous pull limit.
+_labels_lock = threading.Lock()
+_labels: dict[str, dict] = {}
+INDEX_TYPES = ("application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json")
+LINK_LABELS = {  # the ones that say where an image comes from; anything else is dropped
+    "source": ("org.opencontainers.image.source", "org.label-schema.vcs-url"),
+    "documentation": ("org.opencontainers.image.documentation",),
+    "url": ("org.opencontainers.image.url", "org.label-schema.url"),
+}
+
 
 # --------------------------------------------------------------------------- images
 def split_image(ref: str) -> tuple[str, str, str, Optional[str]]:
@@ -57,8 +69,9 @@ def reference_url(host: str, repo: str) -> str:
         return f"https://hub.docker.com/r/{repo}/tags" if not repo.startswith("library/") \
             else f"https://hub.docker.com/_/{repo[8:]}/tags"
     if host == "ghcr.io":
-        owner, _, name = repo.partition("/")
-        return f"https://github.com/{owner}/{name.split('/')[0]}/releases"
+        # GitHub redirects this to the package page, which links the source repo even when the
+        # image isn't named after it (ghcr.io/immich-app/immich-server lives in immich-app/immich).
+        return f"https://ghcr.io/{repo}"
     if host == "lscr.io":
         return f"https://github.com/linuxserver/docker-{repo.split('/')[-1]}/releases"
     if host == "quay.io":
@@ -67,7 +80,45 @@ def reference_url(host: str, repo: str) -> str:
         return f"https://explore.ggcr.dev/?repo=registry.k8s.io/{repo}"
     if host == "public.ecr.aws":
         return f"https://gallery.ecr.aws/{repo}"
-    return f"https://{host}/v2/{repo}/tags/list"
+    return ""  # no browsable page; the registry API wants a token, so a /v2/ link only shows 401
+
+
+# Words that say nothing about which project an image is.
+_GENERIC = {"docker", "image", "images", "container", "containers", "library", "latest", "base", "app",
+            "server", "www", "com", "org", "io", "dev", "net", "github", "gitlab", "http", "https"}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.split(r"[^a-z0-9]+", text.lower()) if len(w) >= 3 and w not in _GENERIC}
+
+
+def _relates(link: str, repo: str) -> bool:
+    """Labels are inherited from the base image unless the build overrides them, so an app built
+    FROM nginx or a distroless image can carry nginx's or Chainguard's source. Trust a label only
+    when it names the image's owner or a word of its name."""
+    owner = re.sub(r"[^a-z0-9]", "", repo.split("/")[0].lower()) if "/" in repo else ""
+    if owner and owner != "library" and owner in re.sub(r"[^a-z0-9/]", "", link.lower()).split("/"):
+        return True
+    return bool(_words(repo.removeprefix("library/")) & _words(link))
+
+
+def _release_page(source: str) -> str:
+    """A source repo's releases page on GitHub or GitLab; any other source link as it is."""
+    m = re.match(r"(?:git\+)?(?:https?://|git@)(github\.com|gitlab\.com)[/:]([^/\s]+)/([^/\s#?]+)", source)
+    if not m:
+        return source
+    host, owner, name = m.group(1), m.group(2), m.group(3).removesuffix(".git")
+    return f"https://{host}/{owner}/{name}/" + ("releases" if host == "github.com" else "-/releases")
+
+
+def label_link(labels: dict, repo: str) -> Optional[str]:
+    """Where to read release notes, from an image's OCI labels: the source repo's releases page,
+    else its documentation, else its home page. None when no label clearly belongs to the image."""
+    for key in ("source", "documentation", "url"):
+        link = (labels.get(key) or "").strip()
+        if link.startswith(("http://", "https://", "git@", "git+")) and _relates(link, repo):
+            return _release_page(link) if key == "source" else link
+    return None
 
 
 class Registry:
@@ -84,19 +135,29 @@ class Registry:
         val = os.environ.get(env, "") if env else ""
         return base64.b64encode(val.encode()).decode() if val else None
 
-    def _call(self, host: str, repo: str, path: str, method: str = "GET", accept: Optional[str] = None):
+    def _call(self, host: str, repo: str, path: str, method: str = "GET", accept: Optional[str] = None,
+              _retry: bool = True):
         real = HOST_ALIASES.get(host, host)
         url = f"{self._scheme(host)}://{real}/v2/{repo}/{path}"
         headers = {"Accept": accept or "application/json"}
         key = f"{real}/{repo}"
+        insecure = self.cfg.get(host, {}).get("insecure", False)
         basic = self._basic(host)
+        cached = None if basic else _tokens.get(key)
         if basic:
             headers["Authorization"] = f"Basic {basic}"
-        elif key in _tokens:
-            headers["Authorization"] = f"Bearer {_tokens[key]}"
+        elif cached:
+            headers["Authorization"] = f"Bearer {cached}"
         try:
-            return request(url, method=method, headers=headers, insecure=self.cfg.get(host, {}).get("insecure", False))
+            return request(url, method=method, headers=headers, insecure=insecure)
         except HttpError as e:
+            # The cached token expired. Most registries answer 401; ECR Public answers 400 DENIED,
+            # with no challenge, so drop the token and start the dance again from an anonymous call.
+            if cached and _retry and e.status in (400, 401, 403):
+                with _token_lock:
+                    if _tokens.get(key) == cached:
+                        del _tokens[key]
+                return self._call(host, repo, path, method, accept, _retry=False)
             if e.status != 401 or basic:
                 raise
             challenge = e.headers.get("www-authenticate", "")
@@ -106,7 +167,7 @@ class Registry:
             with _token_lock:
                 _tokens[key] = token
             headers["Authorization"] = f"Bearer {token}"
-            return request(url, method=method, headers=headers)
+            return request(url, method=method, headers=headers, insecure=insecure)
 
     @staticmethod
     def _token(challenge: str, repo: str) -> Optional[str]:
@@ -169,10 +230,72 @@ class Registry:
                 break
         return tuple(out)
 
+    def labels(self, host: str, repo: str, digest: str) -> dict:
+        """The source/documentation/url labels of an image, by digest; {} if it has none or they
+        can't be read (private image, rate limit). Only definite answers are cached."""
+        with _labels_lock:
+            if digest in _labels:
+                return _labels[digest]
+        try:
+            m = self._call(host, repo, f"manifests/{digest}", accept=MANIFEST_ACCEPT).json()
+            if m.get("mediaType") in INDEX_TYPES or "manifests" in m:
+                # Every platform is built from the same source, so any real one will do.
+                ms = [x for x in m.get("manifests") or [] if (x.get("platform") or {}).get("os") not in (None, "unknown")]
+                if not ms:
+                    return {}
+                pick = next((x for x in ms if x["platform"].get("architecture") == "amd64"), ms[0])
+                m = self._call(host, repo, f"manifests/{pick['digest']}", accept=MANIFEST_ACCEPT).json()
+            cfg_digest = (m.get("config") or {}).get("digest")
+            raw = {}
+            if cfg_digest:
+                raw = (self._call(host, repo, f"blobs/{cfg_digest}").json().get("config") or {}).get("Labels") or {}
+        except HttpError as e:
+            if e.status not in (401, 403, 404):
+                log.info("labels %s/%s@%s: HTTP %s", host, repo, digest[:19], e.status)
+                return {}
+            raw = {}
+        except (ValueError, KeyError, AttributeError) as e:  # not JSON, or not an image
+            log.info("labels %s/%s@%s: %s", host, repo, digest[:19], e)
+            raw = {}
+        found = {}
+        for k, names in LINK_LABELS.items():
+            v = next((raw[n].strip() for n in names if isinstance(raw.get(n), str) and raw[n].strip()), None)
+            if v:
+                found[k] = v[:300]
+        with _labels_lock:
+            _labels[digest] = found
+        return found
+
     @functools.lru_cache(maxsize=512)
     def digest(self, host: str, repo: str, tag: str) -> Optional[str]:
         r = self._call(host, repo, f"manifests/{tag}", method="HEAD", accept=MANIFEST_ACCEPT)
         return r.headers.get("docker-content-digest")
+
+
+def load_labels(path) -> None:
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        log.warning("ignoring unreadable %s: %s", path, e)
+        return
+    with _labels_lock:
+        _labels.update({k: v for k, v in data.items() if isinstance(v, dict)})
+
+
+def save_labels(path, keep: set[str]) -> None:
+    """Write the label cache, pruned to the digests the last scan saw so it can't grow forever."""
+    with _labels_lock:
+        for d in set(_labels) - keep:
+            del _labels[d]
+        text = json.dumps(_labels, sort_keys=True)
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except OSError as e:
+        log.warning("can't save %s: %s", path, e)
 
 
 # ----------------------------------------------------------------------- artifacthub

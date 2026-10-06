@@ -6,6 +6,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from . import upstream
@@ -56,10 +57,12 @@ def _jsonpath(obj, path: str):
 
 
 class Scanner:
-    def __init__(self, k8s, config: dict):
+    def __init__(self, k8s, config: dict, data_dir: Optional[Path] = None):
         self.k8s = k8s
         self.cfg = config
         self.reg = upstream.Registry(config.get("registries"))
+        self.labels_file = Path(data_dir) / "image-labels.json" if data_dir else None
+        self.label_digests: set[str] = set()
 
     # ------------------------------------------------------------------ inventory
     def inventory(self) -> list[dict]:
@@ -153,7 +156,7 @@ class Scanner:
                 "floating": is_floating(tag), "track": icfg.get("track", "any"),
                 "loose_suffix": icfg.get("loose_suffix", host in self.cfg.get("registries", {})),
                 "source": icfg.get("source") or {"type": "registry"},
-                "ref": icfg.get("ref") or upstream.reference_url(host, repo),
+                "ref": icfg.get("ref") or upstream.reference_url(host, repo), "ref_overridden": bool(icfg.get("ref")),
                 "note": icfg.get("note") or note, "first_party": host in self.cfg.get("registries", {}),
             }
             return comp
@@ -270,6 +273,19 @@ class Scanner:
         else:
             self._apply_chart(comp, r)
 
+    def _label_ref(self, comp: dict, digest: Optional[str]):
+        """Prefer the link the image's own labels give over the registry's page (see label_link)."""
+        if not digest:
+            return
+        self.label_digests.add(digest)
+        try:
+            link = upstream.label_link(self.reg.labels(comp["image_host"], comp["image_repo"], digest), comp["image_repo"])
+        except Exception as e:  # noqa: BLE001 — a missing link must never fail the row
+            log.info("labels for %s: %s", comp["image"], e)
+            return
+        if link:
+            comp["ref"] = link
+
     def _resolve_k8s(self, comp: dict):
         installed = comp["installed"]
         m = re.match(r"v?(\d+\.\d+)", installed)
@@ -293,6 +309,8 @@ class Scanner:
             comp["digest_error"] = f"HTTP {e.status}"
         comp["remote_digest"] = remote
         running = comp.get("running_digests") or ([comp["pinned_digest"]] if comp.get("pinned_digest") else [])
+        if not comp.get("ref_overridden"):
+            self._label_ref(comp, (running or [remote])[0])
         if remote and running:
             comp["digest_current"] = remote in running
         # 2) newest tag of the same shape (pinned tags only)
@@ -359,10 +377,14 @@ class Scanner:
     def run(self, workers: int = 8) -> dict:
         t0 = time.time()
         upstream_clear_caches(self.reg)
+        if self.labels_file:
+            upstream.load_labels(self.labels_file)
         comps = self.inventory()
         self.probe(comps)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             comps = list(ex.map(self.resolve, comps))
+        if self.labels_file:
+            upstream.save_labels(self.labels_file, self.label_digests)
         comps.sort(key=lambda c: (STATUS_ORDER.get(c.get("status"), 1), c["category"], c["namespace"], c["name"]))
         summary = {"total": len(comps)}
         for c in comps:
