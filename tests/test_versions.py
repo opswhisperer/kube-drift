@@ -125,6 +125,26 @@ class HelmNesting(unittest.TestCase):
         self.assertEqual(res["summary"]["total"], len(top))
         self.assertNotIn("outdated", res["summary"])  # outdated images only show on their (current) releases
 
+    def test_workloads_an_operator_creates_follow_its_release(self):
+        class K(FakeK8s):
+            def workloads(self):
+                ws = super().workloads()
+                ws.append({"kind": "DaemonSet", "metadata": {"namespace": "longhorn-system", "name": "longhorn-manager",
+                           "annotations": {"meta.helm.sh/release-name": "longhorn"}},
+                           "spec": {"template": {"spec": {"containers": [{"name": "m", "image": "longhornio/longhorn-manager:v1.12.1"}]}}}})
+                for w in ws:
+                    if w["metadata"]["name"] == "csi-attacher":  # created by longhorn-manager at runtime
+                        w["metadata"]["labels"] = {"longhorn.io/managed-by": "longhorn-manager"}
+                    if w["metadata"]["name"] == "whoami":  # names no workload: stays standalone
+                        w["metadata"]["labels"] = {"app.kubernetes.io/managed-by": "kustomize"}
+                return ws
+        comps = {c["id"]: c for c in self.scan(K())["components"]}
+        csi = comps["workload/longhorn-system/csi-attacher/csi-attacher"]
+        self.assertEqual((csi["release"], csi["category"], csi["install"]),
+                         ("helm/longhorn-system/longhorn", "helm-workload", "longhorn-manager (helm longhorn)"))
+        self.assertEqual(comps["helm/longhorn-system/longhorn"]["images"], 2)
+        self.assertNotIn("release", comps["workload/apps/whoami/whoami"])
+
     def test_release_namespace_annotation_and_missing_release(self):
         class K(FakeK8s):
             def workloads(self):

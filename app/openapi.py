@@ -225,7 +225,9 @@ SPEC: dict = {
             "installed": {"type": "string", "description": "Installed chart version, image tag, or component version."},
             "installed_app": {"type": "string", "description": "Helm: the chart's appVersion."},
             "release": {"type": "string", "description": "Helm-managed workload: `id` of the Helm release component "
-                        "that installs it; it is upgraded as part of that release. Absent when the release isn't deployed."},
+                        "that installs it, directly or through an operator the release ships (a workload whose "
+                        "`…/managed-by` label names one of the release's workloads); it is upgraded as part of that "
+                        "release. Absent when the release isn't deployed."},
             "images": {"type": "integer", "description": "Helm release: how many workload images it installs."},
             "images_outdated": {"type": "integer", "description": "Helm release: how many of those images are outdated."},
             "running_version": {"type": "string", "description": "Version reported by the app itself (probes), for floating tags."},

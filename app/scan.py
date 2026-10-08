@@ -171,13 +171,30 @@ class Scanner:
                 comp["release"] = f"helm/{release_ns or ns}/{helm_release}"
             return comp
 
-        for w in self.k8s.workloads():
+        workloads = list(self.k8s.workloads())
+        # An operator a chart installs (longhorn-manager) creates more workloads at runtime and labels
+        # them `<prefix>/managed-by: <operator>`; they are upgraded with that chart's release too.
+        helm_by_name = {}
+        for w in workloads:
+            ann = w["metadata"].get("annotations", {}) or {}
+            if ann.get("meta.helm.sh/release-name"):
+                helm_by_name[(w["metadata"]["namespace"], w["metadata"]["name"])] = (
+                    ann["meta.helm.sh/release-name"], ann.get("meta.helm.sh/release-namespace"))
+
+        for w in workloads:
             ns, name, kind = w["metadata"]["namespace"], w["metadata"]["name"], w["kind"]
             if any(_match(r, ns, name) for r in ignore):
                 continue
             ann = w["metadata"].get("annotations", {}) or {}
             helm_release = ann.get("meta.helm.sh/release-name")
             release_ns = ann.get("meta.helm.sh/release-namespace")
+            operator = None
+            if not helm_release:
+                labels = w["metadata"].get("labels", {}) or {}
+                operator = next((v for k, v in labels.items() if (k == "managed-by" or k.endswith("/managed-by"))
+                                 and (ns, v) in helm_by_name and v != name), None)
+                if operator:
+                    helm_release, release_ns = helm_by_name[(ns, operator)]
             containers = w["spec"]["template"]["spec"].get("containers", [])
             grp = next((g for g in groups if _match(g, ns, name)), None)
             if grp:
@@ -190,7 +207,10 @@ class Scanner:
                 if any(re.search(p, c["image"]) for p in self.cfg.get("ignore_images", [])):
                     continue
                 note = c["name"] if len(containers) > 1 else ""
-                out.append(add_image(ns, name, kind, c["image"], helm_release, note, release_ns))
+                comp = add_image(ns, name, kind, c["image"], helm_release, note, release_ns)
+                if operator:
+                    comp["install"] = f"{operator} (helm {helm_release})"
+                out.append(comp)
 
         for label, g in grouped.items():
             for image, (ns, name, kind, cname) in g["images"].items():
