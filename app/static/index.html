@@ -121,6 +121,7 @@ tr.detail dd.v{font-size:12px}
 .badge.s-current{padding-left:0;font-weight:550}
 .ver{overflow-wrap:anywhere}
 .ver .from{color:var(--muted)}
+.ver .lbl{color:var(--muted);font-size:12.5px;margin-right:6px}
 .ver .to{color:var(--c);font-weight:650}
 .ver .arrow{color:var(--faint);margin:0 5px}
 .imgs-out{color:var(--minor)}
@@ -314,7 +315,7 @@ const sev = c => updateSize(c) || (c.status in SEV ? c.status : 'unknown');
 function badge(c){ const s=sev(c); return `<span class="badge s-${s}" title="${esc(SEV_TITLE[s])}">${SEV_LABEL[s]}</span>`; }
 function versionCell(c){
   const cur=c.running_version||c.installed, s=sev(c), behind=c.status==='outdated' && c.latest && c.latest!==cur;
-  let h=`<div class="ver s-${s}"><span class="v ${behind?'from':''}">${esc(cur)||'—'}</span>`+
+  let h=`<div class="ver s-${s}">${c.category==='helm'?'<span class="lbl">chart</span>':''}<span class="v ${behind?'from':''}">${esc(cur)||'—'}</span>`+
     (behind?` <span class="arrow" aria-label="can update to">→</span> <span class="v to">${esc(c.latest)}</span>`:'')+'</div>';
   const sub=[];
   if(c.running_version) sub.push(`tag <code>${esc(c.installed)}</code>, version asked from the app`);
