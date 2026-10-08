@@ -2,6 +2,7 @@
 
     ignored.json        {"Kind/ns/name": {kind, namespace, name, note, at}}
     rules.json          [{id, kind?, namespace?, name_regex?, source?, note, at}]
+    update-ignores.json {"<component id>": {latest, latest_any, digest, note, at, until, kube_version, until_newer}}
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ class Store:
             self.writable = False
         self._ignored = self._read_json(self.root / "ignored.json", {})
         self._rules = self._read_json(self.root / "rules.json", [])
+        self._updates = self._read_json(self.root / "update-ignores.json", {})
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -92,3 +94,26 @@ class Store:
             self._rules = [r for r in self._rules if r["id"] != rid]
             self._write_atomic(self.root / "rules.json", json.dumps(self._rules, indent=1))
             return len(self._rules) < before
+
+    # ------------------------------------------------------- ignored version updates
+    def update_ignores(self) -> dict:
+        with self.lock:
+            return {k: dict(v) for k, v in self._updates.items()}
+
+    def ignore_updates(self, entries: dict[str, dict]) -> int:
+        """entries: component id -> {latest, latest_any, digest, note, until, kube_version, until_newer}."""
+        with self.lock:
+            for cid, e in entries.items():
+                self._updates[cid] = {**e, "note": str(e.get("note") or "")[:500], "at": _now()}
+            self._write_updates()
+        return len(entries)
+
+    def unignore_updates(self, ids) -> int:
+        with self.lock:
+            n = sum(self._updates.pop(i, None) is not None for i in ids)
+            if n:
+                self._write_updates()
+        return n
+
+    def _write_updates(self):
+        self._write_atomic(self.root / "update-ignores.json", json.dumps(self._updates, indent=1, sort_keys=True))

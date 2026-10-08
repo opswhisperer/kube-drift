@@ -433,6 +433,53 @@ class Scanner:
         }
 
 
+def kube_version(components: list[dict]) -> str:
+    return next((c.get("installed") or "" for c in components if c["id"] == "cluster/kubernetes"), "")
+
+
+def ignore_ended(ig: dict, comp: dict, kube: str, now: datetime) -> Optional[str]:
+    """Why an ignored update shows again, or None while it stays ignored. The first condition met
+    ends it: the date passed, the cluster's Kubernetes version changed, or something newer than the
+    ignored update is offered (for a floating tag: its image changed again)."""
+    if ig.get("until") and now >= datetime.fromisoformat(ig["until"]):
+        return "expired"
+    if ig.get("kube_version") and kube and kube != ig["kube_version"]:
+        return f"Kubernetes changed from {ig['kube_version']} to {kube}"
+    if ig.get("until_newer"):
+        for k in ("latest", "latest_any"):  # each against what it was, so an update outside the track doesn't end it at once
+            if ig.get(k) and comp.get(k) and cmp_versions(comp[k], ig[k]) > 0:
+                return f"{comp[k]} is available"
+        if ig.get("digest") and comp.get("remote_digest") and comp["remote_digest"] != ig["digest"]:
+            return "a newer image is available"
+    return None
+
+
+def apply_ignores(result: dict, ignores: dict, now: Optional[datetime] = None) -> tuple[dict, set[str]]:
+    """The scan with ignored updates marked (`ignored` on the component) and moved out of the
+    summary's status counts into `ignored`. Also returns the ids whose ignore has ended."""
+    now = now or datetime.now(timezone.utc)
+    comps = result.get("components") or []
+    kube = kube_version(comps)
+    ended: set[str] = set()
+    out, summary = [], dict(result.get("summary") or {})
+    for c in comps:
+        ig = ignores.get(c["id"])
+        if ig and ignore_ended(ig, c, kube, now):
+            ended.add(c["id"])
+            ig = None
+        if ig:
+            c = {**c, "ignored": ig}
+            if not c.get("release"):
+                st = c.get("status", "unknown")
+                summary[st] = summary.get(st, 0) - 1
+                if not summary[st]:
+                    del summary[st]
+                summary["ignored"] = summary.get("ignored", 0) + 1
+                summary["total"] = summary.get("total", 0) - 1
+        out.append(c)
+    return {**result, "components": out, "summary": summary}, ended
+
+
 def upstream_clear_caches(reg: upstream.Registry):
     """Caches live for one scan so "latest" never goes stale across scans."""
     for fn in (upstream.artifacthub_package, upstream.artifacthub_search, upstream.github_latest,

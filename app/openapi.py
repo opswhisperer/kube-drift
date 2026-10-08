@@ -64,6 +64,39 @@ SPEC: dict = {
             "summary": "Version scan as CSV",
             "responses": {"200": {"description": "CSV with a header row", "content": {"text/csv": {"schema": {"type": "string"}}}}},
         }},
+        "/api/drift/ignore": {"post": {
+            "tags": ["versions"], "operationId": "ignoreUpdates",
+            "summary": "Ignore components' updates for a while",
+            "description": (
+                "Hides these components' updates (and moves them out of `summary`'s status counts) until the "
+                "first of the conditions given is met: `days` pass, the cluster's Kubernetes version changes, or "
+                "a version newer than the one on offer now comes out (`until_newer`; for a floating tag, its image "
+                "changes again). At least one is required. Ignoring a component again replaces its conditions."),
+            "requestBody": _body({"type": "object", "required": ["ids"], "properties": {
+                "ids": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string"},
+                        "description": "Component ids, as in Component.id."},
+                "days": {"type": "integer", "minimum": 1, "maximum": 3650},
+                "until_kube_change": {"type": "boolean", "description": "End when the control plane's version changes."},
+                "until_newer": {"type": "boolean", "description": "End when a newer version than the one on offer now is available."},
+                "note": {"type": "string", "maxLength": 500}}}),
+            "responses": {
+                "200": {"description": "Ignored", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "ignored": {"type": "integer"},
+                    "skipped": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "why": {"type": "string"}}},
+                                "description": "Components `until_newer` can't track (no version or image digest)."},
+                    "missing": {"type": "array", "items": {"type": "string"}, "description": "Ids not in the current scan."}}}}}},
+                "400": _ERROR, "415": _ERROR, "503": _ERROR},
+        }},
+        "/api/drift/unignore": {"post": {
+            "tags": ["versions"], "operationId": "unignoreUpdates",
+            "summary": "Show components' updates again",
+            "requestBody": _body({"type": "object", "required": ["ids"], "properties": {
+                "ids": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string"}}}}),
+            "responses": {
+                "200": {"description": "Unignored", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "unignored": {"type": "integer"}}}}}},
+                "400": _ERROR, "415": _ERROR, "503": _ERROR},
+        }},
         "/api/orphans": {"get": {
             "tags": ["orphans"], "operationId": "getOrphans",
             "summary": "Orphan scan with ignores and ignore rules applied",
@@ -176,9 +209,11 @@ SPEC: dict = {
         }},
         "VersionScan": {"allOf": [{"$ref": "#/components/schemas/ScanState"}, {"type": "object", "properties": {
             "summary": {"type": "object", "description": "`total`, plus counts per status. Helm-managed workloads "
-                        "(components with `release`) are counted through their release, not on their own.",
+                        "(components with `release`) are counted through their release, not on their own. Components "
+                        "with ignored updates count under `ignored` instead of their status, and not in `total`.",
                         "additionalProperties": {"type": "integer"}},
             "components": {"type": "array", "items": {"$ref": "#/components/schemas/Component"}},
+            "ignore_enabled": {"type": "boolean", "description": "False when kube-drift can't save ignores."},
         }}]},
         "Component": {"type": "object", "description": "One installed thing and its newest upstream version.", "properties": {
             "id": {"type": "string"},
@@ -197,6 +232,7 @@ SPEC: dict = {
             "latest": {"type": ["string", "null"], "description": "Newest version within the configured track."},
             "latest_any": {"type": ["string", "null"], "description": "Newest version overall, when it differs."},
             "latest_app": {"type": ["string", "null"], "description": "Helm: appVersion of the latest chart."},
+            "ignored": {"$ref": "#/components/schemas/UpdateIgnored"},
             "incompatible": {"type": "string", "description": "Why `latest` can't be installed on this cluster, e.g. the "
                              "chart's `kubeVersion` range excludes the control plane's version. Absent when it can, or "
                              "when kube-drift can't tell."},
@@ -214,6 +250,16 @@ SPEC: dict = {
             "source": {"type": "object", "description": "Where the available version came from (see config)."},
             "probe_source": {"type": ["object", "null"]}, "first_party": {"type": "boolean"}, "loose_suffix": {"type": "boolean"},
             "ref_overridden": {"type": "boolean", "description": "ref was set in config or by a probe, not discovered."}, "updated": {"type": "string"}, "checked_at": {"type": "string", "format": "date-time"},
+        }},
+        "UpdateIgnored": {"type": "object", "description": "Present only while the component's update is ignored. "
+                          "It ends at the first condition met; ended ignores are removed.", "properties": {
+            "latest": {"type": ["string", "null"], "description": "The version on offer when it was ignored."},
+            "latest_any": {"type": ["string", "null"], "description": "latest_any when it was ignored."},
+            "digest": {"type": ["string", "null"], "description": "Floating tag: the registry digest when it was ignored."},
+            "until": {"type": ["string", "null"], "format": "date-time"},
+            "kube_version": {"type": ["string", "null"], "description": "Ends when the cluster no longer runs this version."},
+            "until_newer": {"type": "boolean", "description": "Ends when something newer than `latest` is available."},
+            "note": {"type": "string"}, "at": {"type": "string", "format": "date-time"},
         }},
         "OrphanScan": {"allOf": [{"$ref": "#/components/schemas/ScanState"}, {"type": "object", "properties": {
             "format": {"type": "integer", "description": "Shape version of the scan result."},

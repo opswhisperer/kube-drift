@@ -140,8 +140,13 @@ Prereleases are ignored.
 
 A chart update whose `kubeVersion` excludes the control plane's version is marked incompatible,
 with the reason. The range comes from ArtifactHub, or for an OCI chart from the chart's metadata
-in its registry (a small config blob, cached by digest; the chart itself isn't pulled). The dashboard hides those rows until you press
-"Show N incompatible".
+in its registry (a small config blob, cached by digest; the chart itself isn't pulled). The
+dashboard hides those rows until you press "Show N incompatible".
+
+To put off an update, expand its row and press "Ignore this update…". It stays hidden until the
+first of the conditions you pick: the next version coming out (for a floating tag, its image
+changing again), a number of days, or the cluster's Kubernetes version changing. Ignores are kept on
+kube-drift's volume (`update-ignores.json`) and are also available through the API (`/docs`).
 
 Floating tags (`latest`, `main`, `nightly`…) carry no version, so the running image digest is
 compared with the registry's current digest for that tag ("newer image behind tag"). Apps that

@@ -71,6 +71,9 @@ class Live(unittest.TestCase):
         main.ORPHANS.store.ignore([{"kind": "StorageClass", "namespace": "", "name": "longhorn-static"}], "n")
         main.STATE.result = {"scanned_at": "2026-10-03T00:00:00+00:00", "duration_s": 1.0, "summary": {"total": 1},
                              "components": Scanner(FakeK8s(), {}).inventory()}
+        comp = main.STATE.result["components"][-1]["id"]
+        main.ORPHANS.store.ignore_updates({comp: {"latest": "2.0", "note": "n", "until": "2999-01-01T00:00:00+00:00",
+                                                  "kube_version": None, "until_newer": True, "latest_any": None, "digest": None}})
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), main.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
@@ -103,6 +106,9 @@ class Live(unittest.TestCase):
         d = json.loads(body)
         self.assertEqual(set(d) - props("VersionScan"), set())
         self.assertEqual({k for c in d["components"] for k in c} - props("Component"), set())
+        ignored = [c["ignored"] for c in d["components"] if c.get("ignored")]
+        self.assertTrue(ignored)
+        self.assertEqual({k for i in ignored for k in i} - props("UpdateIgnored"), set())
 
     def test_openapi_and_docs(self):
         status, headers, body = self.get("/openapi.json")

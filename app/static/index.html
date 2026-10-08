@@ -126,7 +126,10 @@ tr.detail dd.v{font-size:12px}
 .ver .arrow{color:var(--faint);margin:0 5px}
 .imgs-out{color:var(--minor)}
 .incompat{color:var(--major)}
-button#showinc[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+button#showinc[aria-pressed=true],button#showign[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.ignored-note{font-style:italic}
+tr.detail .dacts{margin-top:10px;display:flex;gap:8px}
+.scopes input[type=number]{width:72px}
 
 /* orphans */
 .o-orphan{--c:var(--minor);--bg-c:var(--minor-bg)} .o-in-use{--c:var(--ok);--bg-c:var(--ok-bg)}
@@ -227,6 +230,7 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
       <option value="tagstyle">Group by tag style</option>
     </select>
     <input type="search" id="q" placeholder="Search name, image or version" aria-label="search">
+    <button id="showign" aria-pressed="false" title="Updates you chose to ignore for a while" hidden></button>
     <button id="showinc" aria-pressed="false" title="Updates this cluster can't install, such as a chart that needs a newer Kubernetes" hidden></button>
     <span class="hint" id="count"></span>
   </div>
@@ -287,8 +291,8 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 <div class="toast" id="toast" hidden></div>
 <script>
 const $ = s => document.querySelector(s);
-const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', showInc:false, shut:new Set(), sort:'status', asc:true, open:new Set() };
-try{ state.group=localStorage.getItem('kd.group')||''; state.showInc=localStorage.getItem('kd.showinc')==='1'; }catch{}
+const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', showInc:false, showIgn:false, shut:new Set(), sort:'status', asc:true, open:new Set() };
+try{ state.group=localStorage.getItem('kd.group')||''; state.showInc=localStorage.getItem('kd.showinc')==='1'; state.showIgn=localStorage.getItem('kd.showign')==='1'; }catch{}
 const ost = { data:null, view:'versions', tile:'', kind:'', ns:'', q:'', showIgn:false, sort:'status', asc:true, sel:new Set() };
 const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm image' };
 // Worst first: what you'd act on, then what kube-drift couldn't check, then what's fine.
@@ -327,8 +331,15 @@ function versionCell(c){
   if(c.floating && !c.running_version) sub.push(c.digest_current===true?'floating tag, running its current image':c.digest_current===false?'floating tag, a newer image is behind it':'floating tag');
   if(c.latest_any && c.latest_any!==c.latest) sub.push(`${esc(c.latest_any)} outside your track`);
   if(c.incompatible) sub.push(`<span class="incompat">Not compatible: ${esc(c.incompatible)}</span>`);
+  if(c.ignored) sub.push(`<span class="ignored-note">${esc(ignoreText(c.ignored))}</span>`);
   if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':(c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':'no comparable version found'));
   return h+(sub.filter(Boolean).length?subLine(sub):'');
+}
+// "Ignored until Oct 20 or until something newer than 1.12.4 is out — note": an ignore ends at its first condition met.
+function ignoreText(ig){
+  const until=[ig.until&&'until '+new Date(ig.until).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}),
+    ig.kube_version&&`until Kubernetes moves off ${ig.kube_version}`, ig.until_newer&&`until something newer than ${ig.latest||'this image'} is out`].filter(Boolean);
+  return 'Ignored '+until.join(' or ')+(ig.note?' — '+ig.note:'');
 }
 function refCell(c){
   const links=[]; if(c.ref) links.push(`<a href="${esc(c.ref)}" target="_blank" rel="noopener">${esc(host(c.ref))}</a>`);
@@ -379,10 +390,13 @@ function render(){
   showCluster(d.cluster); showVersion(d.version);
   if(ost.view==='versions') setMeta(d,'scan','Scanning');
   // An update the cluster can't install (c.incompatible says why) is hidden unless asked for.
-  const inc=(d.components||[]).filter(c=>c.incompatible).length;
-  const all=(d.components||[]).filter(c=>state.showInc||!c.incompatible);
+  // So is one you ignored for a while (c.ignored), until its ignore ends.
+  const inc=(d.components||[]).filter(c=>c.incompatible).length, ign=(d.components||[]).filter(c=>c.ignored&&!c.release).length;
+  const all=(d.components||[]).filter(c=>(state.showInc||!c.incompatible)&&(state.showIgn||!c.ignored));
   const sib=$('#showinc'); sib.hidden=!inc; sib.setAttribute('aria-pressed',state.showInc);
   sib.textContent=state.showInc?'Hide incompatible':`Show ${inc} incompatible`;
+  const gib=$('#showign'); gib.hidden=!ign; gib.setAttribute('aria-pressed',state.showIgn);
+  gib.textContent=state.showIgn?'Hide ignored':`Show ${ign} ignored`;
   const top=all.filter(c=>!c.release);
   const out=top.filter(c=>c.status==='outdated').length; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
   // Helm-managed containers are listed under their release (expand it), not on their own.
@@ -401,6 +415,7 @@ function render(){
       seg('error','lookup errors','--err'),seg('unknown','unknown','--unk-bar')],
     segs,
   });
+  if(ign && !state.showIgn) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${ign} ignored</span>`);
   if(inc && !state.showInc) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${inc} incompatible update${inc===1?'':'s'} hidden</span>`);
   if(imgRel) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${imgRel} more Helm release${imgRel===1?' ships':'s ship'} outdated images</span>`);
   // namespaces
@@ -428,11 +443,13 @@ function render(){
       <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
-    const dl=[['Not compatible',c.incompatible],['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
-    return row+`<tr class="detail"><td colspan="4"><dl>${dl}</dl></td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
+    const canIgn=d.ignore_enabled && !c.release && (c.ignored || c.status==='outdated' || c.images_outdated);
+    const acts=!canIgn?'':`<div class="dacts">${c.ignored?`<button data-unign="${esc(c.id)}">Stop ignoring</button>`:`<button data-ign="${esc(c.id)}">Ignore this update…</button>`}</div>`;
+    return row+`<tr class="detail"><td colspan="4"><dl>${dl}</dl>${acts}</td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
   };
   $('#rows').innerHTML = !rows.length? `<tr><td colspan="4" class="empty">${d.scanned_at?'Nothing matches these filters.':'Waiting for the first scan.'}</td></tr>`
     : !state.group? rows.map(c=>rowHtml(c)).join('') : groupRows(rows).map(([key,items])=>{
@@ -469,11 +486,35 @@ document.addEventListener('click',e=>{
   const tile=e.target.closest('[data-t]'); if(tile){ const t=tile.dataset.t; state.tile=state.tile===t?'':t; render(); refocus(`#strip .headline [data-t="${t}"]`); return; }
   const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); refocus(`th[data-k="${th.dataset.k}"] button`); return; }
   const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); refocus(`tr.grp[data-g="${CSS.escape(g)}"]`); return; }
+  const ib=e.target.closest('[data-ign]'); if(ib){ ignoreUpdate(ib.dataset.ign).catch(err=>toast('Ignore failed: '+esc(err.message))); return; }
+  const ub=e.target.closest('[data-unign]'); if(ub){ call('/api/drift/unignore',{ids:[ub.dataset.unign]}).then(()=>{ toast('Showing its updates again'); return load(); })
+    .catch(err=>toast('Failed: '+esc(err.message))); return; }
   const row=e.target.closest('tr.row'); if(row && !e.target.closest('a')){ const id=row.dataset.id; state.open.has(id)?state.open.delete(id):state.open.add(id); render(); refocus(`tr.row[data-id="${CSS.escape(id)}"]`); }
 });
 $('#ns').addEventListener('change',e=>{ state.ns=e.target.value; render(); });
 $('#group').value=state.group;
 $('#group').addEventListener('change',e=>{ state.group=e.target.value; state.shut.clear(); try{ localStorage.setItem('kd.group',state.group); }catch{} render(); });
+$('#showign').addEventListener('click',()=>{ state.showIgn=!state.showIgn; try{ localStorage.setItem('kd.showign',state.showIgn?'1':''); }catch{} render(); refocus('#showign'); });
+// Ignore a component's update until the first chosen condition: N days, a Kubernetes version change, or the next version.
+async function ignoreUpdate(id){
+  const comps=state.data.components||[], c=comps.find(x=>x.id===id); if(!c) return;
+  const kube=(comps.find(x=>x.id==='cluster/kubernetes')||{}).installed;
+  const r=await modal({title:`Ignore ${c.name}${c.latest?' → '+c.latest:''}`, ok:'Ignore',
+    body:`<p>Hides this update until the first of these happens:</p><div class="scopes">
+      ${c.latest||c.remote_digest?`<label><input type="checkbox" id="ig-newer" checked><span>${c.latest?`Something newer than ${esc(c.latest)} comes out`:'The tag gets a newer image'}</span></label>`:''}
+      <label><input type="checkbox" id="ig-days-on" ${c.latest||c.remote_digest?'':'checked'}><span>For <input type="number" id="ig-days" value="30" min="1" max="3650" aria-label="days"> days</span></label>
+      ${kube?`<label><input type="checkbox" id="ig-kube"><span>Kubernetes moves off ${esc(kube)}</span></label>`:''}</div>`,
+    input:'<input type="text" id="dlg-field" placeholder="note (optional) — why wait?">'});
+  if(!r.ok) return;
+  const body={ids:[id], note:r.value};
+  if($('#ig-days-on').checked) body.days=parseInt($('#ig-days').value,10);
+  if($('#ig-kube')?.checked) body.until_kube_change=true;
+  if($('#ig-newer')?.checked) body.until_newer=true;
+  if(!body.days && !body.until_kube_change && !body.until_newer){ toast('Pick at least one condition'); return; }
+  const res=await call('/api/drift/ignore',body);
+  toast(res.ignored?`Ignored ${esc(c.name)}`:esc(res.skipped[0]?.why||'Not ignored'));
+  await load();
+}
 $('#showinc').addEventListener('click',()=>{ state.showInc=!state.showInc; try{ localStorage.setItem('kd.showinc',state.showInc?'1':''); }catch{} render(); refocus('#showinc'); });
 $('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
 $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+ost.view,{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });

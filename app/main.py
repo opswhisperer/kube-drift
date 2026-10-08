@@ -20,7 +20,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,7 +29,7 @@ import yaml
 from . import orphans
 from .openapi import SPEC
 from .k8s import K8s
-from .scan import Scanner, now_iso
+from .scan import Scanner, apply_ignores, kube_version, now_iso
 from .store import Store
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -83,13 +83,22 @@ class State:
                 log.warning("ignoring %s: %s", STATE_FILE, e)
 
     def snapshot(self) -> dict:
+        """The last scan with ignored updates applied at read time, so they take effect at once."""
+        store = ORPHANS.store
         with self.lock:
-            return {
+            meta = {
                 "scanning": self.scanning, "last_error": self.last_error,
                 "next_scan_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(self.next_scan)) if self.next_scan else None,
                 "generated_at": now_iso(), "cluster": CLUSTER["name"], "version": VERSION,
-                **(self.result or {"scanned_at": None, "summary": {}, "components": []}),
+                "ignore_enabled": store.writable,
             }
+            result = self.result or {"scanned_at": None, "summary": {}, "components": []}
+        result, _ = apply_ignores(result, store.update_ignores())
+        return {**meta, **result}
+
+    def find(self, ids: list[str]) -> dict[str, dict]:
+        with self.lock:
+            return {c["id"]: c for c in (self.result or {}).get("components", []) if c["id"] in set(ids)}
 
 
 STATE = State()
@@ -164,6 +173,10 @@ def scan_loop(cfg: dict):
             result = scanner.run()
             with STATE.lock:
                 STATE.result, STATE.last_error = result, None
+            _, ended = apply_ignores(result, ORPHANS.store.update_ignores())
+            if ended:  # a new scan can end an ignore (Kubernetes upgraded, awaited version out)
+                ORPHANS.store.unignore_updates(ended)
+                log.info("ignores ended: %s", ", ".join(sorted(ended)))
             try:
                 STATE_FILE.write_text(json.dumps(result))
             except Exception as e:  # noqa: BLE001
@@ -288,7 +301,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         actions = {"/api/orphans/ignore": self._ignore, "/api/orphans/unignore": self._unignore,
                    "/api/orphans/commands": self._commands,
-                   "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule}
+                   "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule,
+                   "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates}
         if path not in actions:
             self._send(404, b'{"error":"not found"}')
             return
@@ -319,6 +333,11 @@ class Handler(BaseHTTPRequestHandler):
                 ids = [str(i) for i in body.get("ids", [])]
                 if not ids or len(ids) > 1000:
                     raise ValueError("ids: 1..1000 resource ids (Kind/namespace/name)")
+                body["ids"] = ids
+            elif self.path.split("?", 1)[0] in ("/api/drift/ignore", "/api/drift/unignore"):
+                ids = [str(i) for i in body.get("ids", [])]
+                if not ids or len(ids) > 1000:
+                    raise ValueError("ids: 1..1000 component ids")
                 body["ids"] = ids
             return body
         except (ValueError, AttributeError) as e:
@@ -364,6 +383,45 @@ class Handler(BaseHTTPRequestHandler):
             return
         ok = ORPHANS.store.remove_rule(str(body.get("id") or ""))
         self._json(200 if ok else 404, {"removed": ok})
+
+    # ----- ignored version updates (kube-drift's own state) -----
+    def _ignore_updates(self, body: dict):
+        """Hide components' updates until the first of: `days` pass, the cluster's Kubernetes version
+        changes (`until_kube_change`), or a version newer than the one ignored is offered (`until_newer`)."""
+        if not ORPHANS.store.writable:
+            self._json(503, {"error": f"{ORPHANS.store.root} is not writable"})
+            return
+        days, newer = body.get("days"), bool(body.get("until_newer"))
+        if days is not None and (not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 3650):
+            self._json(400, {"error": "days: a whole number from 1 to 3650"})
+            return
+        if days is None and not body.get("until_kube_change") and not newer:
+            self._json(400, {"error": "say when the ignore ends: days, until_kube_change or until_newer"})
+            return
+        with STATE.lock:
+            kube = kube_version((STATE.result or {}).get("components", []))
+        if body.get("until_kube_change") and not kube:
+            self._json(400, {"error": "the cluster's Kubernetes version isn't known yet; wait for a scan"})
+            return
+        found = STATE.find(body["ids"])
+        entries, skipped = {}, []
+        for cid, c in found.items():
+            digest = None if c.get("latest") else c.get("remote_digest")
+            if newer and not c.get("latest") and not digest:
+                skipped.append({"id": cid, "why": "no version or image digest to wait past"})
+                continue
+            entries[cid] = {"latest": c.get("latest"), "latest_any": c.get("latest_any"), "digest": digest, "note": body.get("note"),
+                            "until": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(timespec="seconds") if days else None,
+                            "kube_version": kube if body.get("until_kube_change") else None,
+                            "until_newer": newer}
+        n = ORPHANS.store.ignore_updates(entries) if entries else 0
+        self._json(200, {"ignored": n, "skipped": skipped, "missing": [i for i in body["ids"] if i not in found]})
+
+    def _unignore_updates(self, body: dict):
+        if not ORPHANS.store.writable:
+            self._json(503, {"error": f"{ORPHANS.store.root} is not writable"})
+            return
+        self._json(200, {"unignored": ORPHANS.store.unignore_updates(body["ids"])})
 
     def _commands(self, body: dict):
         """kubectl script to export, or back up and delete, the given scanned items."""
