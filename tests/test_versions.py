@@ -1,5 +1,7 @@
 import unittest
 
+from app.scan import Scanner
+from tests.fake_k8s import FakeK8s
 from app.upstream import split_image
 from app.versions import cmp_versions, is_floating, pick_latest
 
@@ -43,6 +45,50 @@ class Versions(unittest.TestCase):
     def test_loose_suffix_first_party(self):
         tags = ["0.0.161-589c824437-r1", "0.0.162-aaaaaaaaaa-r1", "0.0.162-aaaaaaaaaa-rc1"]
         self.assertEqual(pick_latest("0.0.161-589c824437-r1", tags, loose_suffix=True)["latest"], "0.0.162-aaaaaaaaaa-r1")
+
+
+class HelmNesting(unittest.TestCase):
+    """Containers a Helm release installs are listed under that release, not on their own."""
+
+    def scan(self, k8s=None):
+        sc = Scanner(k8s or FakeK8s(), {})
+        outdated = {"gitea-valkey", "prometheus-stack-grafana", "gitea"}
+        def resolve(c):
+            c["status"] = "outdated" if c["name"] in outdated and c["category"] != "helm" else "current"
+            return c
+        sc.resolve = resolve
+        return sc.run()
+
+    def test_linked_to_release(self):
+        comps = {c["id"]: c for c in self.scan()["components"]}
+        self.assertEqual(comps["workload/gitea/gitea-valkey/valkey"]["release"], "helm/gitea/gitea")
+        self.assertNotIn("release", comps["workload/apps/whoami/whoami"])
+        gitea = comps["helm/gitea/gitea"]
+        self.assertEqual((gitea["status"], gitea["images"], gitea["images_outdated"]), ("current", 2, 2))
+        self.assertEqual(comps["helm/monitoring/prometheus-stack"]["images"], 3)
+        self.assertNotIn("images", comps["helm/kube-system/descheduler"])
+
+    def test_summary_counts_releases_not_containers(self):
+        res = self.scan()
+        top = [c for c in res["components"] if not c.get("release")]
+        self.assertLess(len(top), len(res["components"]))
+        self.assertEqual(res["summary"]["total"], len(top))
+        self.assertNotIn("outdated", res["summary"])  # outdated images only show on their (current) releases
+
+    def test_release_namespace_annotation_and_missing_release(self):
+        class K(FakeK8s):
+            def workloads(self):
+                ws = super().workloads()
+                for w in ws:
+                    if w["metadata"]["name"] == "operator":  # installed by a release in another namespace
+                        w["metadata"]["annotations"]["meta.helm.sh/release-namespace"] = "kube-system"
+                        w["metadata"]["annotations"]["meta.helm.sh/release-name"] = "descheduler"
+                    if w["metadata"]["name"] == "litellm":  # its release isn't deployed
+                        w["metadata"]["annotations"]["meta.helm.sh/release-name"] = "gone"
+                return ws
+        comps = {c["id"]: c for c in Scanner(K(), {}).inventory()}
+        self.assertEqual(comps["workload/tailscale/operator/k8s-operator"]["release"], "helm/kube-system/descheduler")
+        self.assertNotIn("release", comps["workload/ai/litellm/litellm"])
 
 
 if __name__ == "__main__":

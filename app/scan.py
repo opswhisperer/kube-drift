@@ -71,6 +71,11 @@ class Scanner:
         comps += self._nodes()
         comps += self._helm()
         comps += self._workloads()
+        # A helm-managed container is upgraded with its release, so it hangs off the release's row.
+        releases = {c["id"] for c in comps if c["category"] == "helm"}
+        for c in comps:
+            if c.get("release") not in (None, *releases):
+                del c["release"]  # release not deployed (failed, uninstalling): keep the row standalone
         return comps
 
     def _cluster(self) -> list[dict]:
@@ -141,7 +146,8 @@ class Scanner:
                 if "@" in iid:
                     digests.setdefault(cs.get("image", ""), set()).add(iid.split("@", 1)[1])
 
-        def add_image(ns: str, name: str, kind: str, image: str, helm_release: Optional[str], note: str = ""):
+        def add_image(ns: str, name: str, kind: str, image: str, helm_release: Optional[str], note: str = "",
+                      release_ns: Optional[str] = None):
             host, repo, tag, pinned_digest = upstream.split_image(image)
             key = f"{host}/{repo}" if host != "docker.io" else repo.removeprefix("library/")
             icfg = _lookup(images_cfg, f"{host}/{repo}", key, repo)
@@ -159,6 +165,8 @@ class Scanner:
                 "ref": icfg.get("ref") or upstream.reference_url(host, repo), "ref_overridden": bool(icfg.get("ref")),
                 "note": icfg.get("note") or note, "first_party": host in self.cfg.get("registries", {}),
             }
+            if helm_release:
+                comp["release"] = f"helm/{release_ns or ns}/{helm_release}"
             return comp
 
         for w in self.k8s.workloads():
@@ -167,6 +175,7 @@ class Scanner:
                 continue
             ann = w["metadata"].get("annotations", {}) or {}
             helm_release = ann.get("meta.helm.sh/release-name")
+            release_ns = ann.get("meta.helm.sh/release-namespace")
             containers = w["spec"]["template"]["spec"].get("containers", [])
             grp = next((g for g in groups if _match(g, ns, name)), None)
             if grp:
@@ -179,7 +188,7 @@ class Scanner:
                 if any(re.search(p, c["image"]) for p in self.cfg.get("ignore_images", [])):
                     continue
                 note = c["name"] if len(containers) > 1 else ""
-                out.append(add_image(ns, name, kind, c["image"], helm_release, note))
+                out.append(add_image(ns, name, kind, c["image"], helm_release, note, release_ns))
 
         for label, g in grouped.items():
             for image, (ns, name, kind, cname) in g["images"].items():
@@ -386,8 +395,16 @@ class Scanner:
         if self.labels_file:
             upstream.save_labels(self.labels_file, self.label_digests)
         comps.sort(key=lambda c: (STATUS_ORDER.get(c.get("status"), 1), c["category"], c["namespace"], c["name"]))
-        summary = {"total": len(comps)}
+        by_id = {c["id"]: c for c in comps}
         for c in comps:
+            if c.get("release"):
+                rel = by_id[c["release"]]
+                rel["images"] = rel.get("images", 0) + 1
+                rel["images_outdated"] = rel.get("images_outdated", 0) + (c.get("status") == "outdated")
+        # Count what you'd act on: a release once, not once per container it ships.
+        top = [c for c in comps if not c.get("release")]
+        summary = {"total": len(top)}
+        for c in top:
             summary[c.get("status", "unknown")] = summary.get(c.get("status", "unknown"), 0) + 1
         return {
             "scanned_at": now_iso(), "duration_s": round(time.time() - t0, 1),

@@ -46,6 +46,7 @@ th.sorted::after{content:" ▾";color:var(--accent)} th.sorted.asc::after{conten
 tr.grp td{background:var(--bg);font-weight:600;cursor:pointer;user-select:none;padding:7px 12px}
 tr.grp .tw{display:inline-block;width:14px;color:var(--muted)} tr.grp .sub{font-weight:400;margin-left:8px}
 tr.row{cursor:pointer} tr.row:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+tr.child td{background:color-mix(in srgb,var(--line) 20%,transparent)} tr.child td:first-child{padding-left:28px} tr.child .name{font-weight:500}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
 .badge.outdated{background:var(--warn-bg);color:var(--warn)} .badge.current{background:var(--ok-bg);color:var(--ok)}
 .badge.unknown{background:var(--unk-bg);color:var(--unk)} .badge.error{background:var(--err-bg);color:var(--err)}
@@ -245,6 +246,9 @@ function render(){
   if(ost.view==='versions') $('#rescan').disabled=!!d.scanning;
   const out=(d.summary||{}).outdated||0; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
   const all=d.components||[];
+  // Helm-managed containers are listed under their release (expand it), not on their own.
+  const kids=new Map(); all.forEach(c=>{ if(c.release){ if(!kids.has(c.release)) kids.set(c.release,[]); kids.get(c.release).push(c); } });
+  kids.forEach(v=>v.sort((a,b)=>(ORDER[a.status]??9)-(ORDER[b.status]??9)||(a.name+a.image).localeCompare(b.name+b.image)));
   // tiles
   const s=d.summary||{}; const tiles=[['outdated','Outdated'],['current','Current'],['unknown','Unknown'],['error','Errors'],['total','Components']];
   $('#tiles').innerHTML=tiles.filter(([k])=>k==='total'||s[k]).map(([k,l])=>`<div class="tile ${k} ${state.tile===k?'active':''}" data-t="${k}"><div class="n">${s[k]||0}</div><div class="l">${l}</div></div>`).join('');
@@ -253,35 +257,38 @@ function render(){
   nsSel.innerHTML='<option value="">all namespaces</option>'+nss.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
   // filter
   let rows=all.filter(c=>{
-    if(state.cat? c.category!==state.cat : c.category==='helm-workload') return false;
+    if(state.cat? c.category!==state.cat : c.release) return false;
     if(state.ns && c.namespace!==state.ns) return false;
     if(state.tile && state.tile!=='total' && c.status!==state.tile) return false;
-    if(state.drift && c.status!=='outdated') return false;
-    if(state.q){ const h=[c.name,c.namespace,c.image,c.installed,c.latest,c.running_version,c.note].join(' ').toLowerCase(); if(!h.includes(state.q)) return false; }
+    if(state.drift && c.status!=='outdated' && !c.images_outdated) return false;
+    const hay=x=>[x.name,x.namespace,x.image,x.installed,x.latest,x.running_version,x.note].join(' ').toLowerCase();
+    if(state.q && !hay(c).includes(state.q) && !(state.cat? [] : kids.get(c.id)||[]).some(k=>hay(k).includes(state.q))) return false;
     return true;
   });
   const k=state.sort; rows.sort((a,b)=>{ let x=k==='status'?ORDER[a.status]??9:(a[k]||''), y=k==='status'?ORDER[b.status]??9:(b[k]||'');
     if(x<y) return state.asc?-1:1; if(x>y) return state.asc?1:-1; return (a.namespace+a.name).localeCompare(b.namespace+b.name); });
   $('#count').textContent=`${rows.length} shown`;
   document.querySelectorAll('th[data-k]').forEach(th=>{ th.classList.toggle('sorted',th.dataset.k===k); th.classList.toggle('asc',state.asc); });
-  const rowHtml = c=>{
-    const open=state.open.has(c.id);
-    const row=`<tr class="row" data-id="${esc(c.id)}">
+  const rowHtml = (c,child)=>{
+    const open=state.open.has(c.id), ks=!child&&!state.cat? kids.get(c.id)||[] : [];
+    const imgs=ks.length?` · <span class="tw">${open?'▾':'▸'}</span> ${ks.length} image${ks.length===1?'':'s'}`+
+      (c.images_outdated?` <span style="color:var(--warn)">(${c.images_outdated} outdated)</span>`:''):'';
+    const row=`<tr class="row${child?' child':''}" data-id="${esc(c.id)}">
       <td><span class="badge ${c.status}">${c.status}</span></td>
-      <td><div class="name">${esc(c.name)}</div><div class="sub">${esc(c.namespace)}${c.kind?' · '+esc(c.kind):''}${c.note?' · '+esc(c.note):''}</div></td>
+      <td><div class="name">${esc(c.name)}</div><div class="sub">${[child?'':c.namespace,c.kind,c.note].filter(Boolean).map(esc).join(' · ')}${imgs}</div></td>
       <td>${installedCell(c)}</td><td>${latestCell(c)}</td>
       <td class="hide-sm"><span class="sub">${esc(c.install)}</span></td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
     const dl=[['id',c.id],['category',CAT[c.category]||c.category],['image',c.image],['source',JSON.stringify(c.source)],['running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['registry digest',c.remote_digest],['probe',c.probe_error||(c.running_version?'ok':'')],['error',c.error],['checked',c.checked_at]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
-    return row+`<tr class="detail"><td colspan="6"><dl>${dl}</dl></td></tr>`;
+    return row+`<tr class="detail"><td colspan="6"><dl>${dl}</dl></td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
   };
   $('#rows').innerHTML = !rows.length? '<tr><td colspan="6" class="empty">nothing matches</td></tr>'
-    : !state.group? rows.map(rowHtml).join('') : groupRows(rows).map(([key,items])=>{
+    : !state.group? rows.map(c=>rowHtml(c)).join('') : groupRows(rows).map(([key,items])=>{
       const shut=state.shut.has(key), out=state.group==='status'||state.group==='update'?0:items.filter(c=>c.status==='outdated').length;
       const label=state.group==='category'?CAT[key]||key:key||GROUP_NONE[state.group]||'—';
       return `<tr class="grp" data-g="${esc(key)}"><td colspan="6"><span class="tw">${shut?'▸':'▾'}</span>${esc(label)}<span class="sub">${items.length}${out?` · ${out} outdated`:''}</span></td></tr>`
-        +(shut?'':items.map(rowHtml).join(''));
+        +(shut?'':items.map(c=>rowHtml(c)).join(''));
     }).join('');
 }
 const GROUP_NONE = { update:'not outdated', owner:'not on GitHub', image_host:'not an image', tagstyle:'not an image' };

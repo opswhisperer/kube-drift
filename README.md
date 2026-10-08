@@ -131,7 +131,7 @@ What that looks like:
 | Nodes | kubelet and container runtime per node | Kubernetes stable pointer; GitHub `containerd/containerd` |
 | Helm releases | Helm v3 release Secrets (chart version + appVersion) | ArtifactHub, an OCI chart repo, or GitHub releases |
 | Manifests | every Deployment/StatefulSet/DaemonSet not owned by Helm | newest registry tag of the same shape as the running tag |
-| Helm-managed workloads | the images inside Helm releases (hidden by default) | same as manifests |
+| Helm-managed workloads | the images inside Helm releases: listed and counted under their release (click it to expand), since the chart upgrades them | same as manifests |
 
 Pinned tags are matched by shape: `v1.35.9` only considers `vX.Y.Z` tags, `9.0-alpine` only
 `X.Y-alpine`, `distroless-v1.39.1` only `distroless-vX.Y.Z`. `track: minor|major` limits the

@@ -173,7 +173,9 @@ SPEC: dict = {
             "generated_at": {"type": "string", "format": "date-time"},
         }},
         "VersionScan": {"allOf": [{"$ref": "#/components/schemas/ScanState"}, {"type": "object", "properties": {
-            "summary": {"type": "object", "description": "`total`, plus counts per status.", "additionalProperties": {"type": "integer"}},
+            "summary": {"type": "object", "description": "`total`, plus counts per status. Helm-managed workloads "
+                        "(components with `release`) are counted through their release, not on their own.",
+                        "additionalProperties": {"type": "integer"}},
             "components": {"type": "array", "items": {"$ref": "#/components/schemas/Component"}},
         }}]},
         "Component": {"type": "object", "description": "One installed thing and its newest upstream version.", "properties": {
@@ -185,6 +187,10 @@ SPEC: dict = {
             "install": {"type": "string", "description": "How it was installed: helm, manifest, kubeadm, static pod…"},
             "installed": {"type": "string", "description": "Installed chart version, image tag, or component version."},
             "installed_app": {"type": "string", "description": "Helm: the chart's appVersion."},
+            "release": {"type": "string", "description": "Helm-managed workload: `id` of the Helm release component "
+                        "that installs it; it is upgraded as part of that release. Absent when the release isn't deployed."},
+            "images": {"type": "integer", "description": "Helm release: how many workload images it installs."},
+            "images_outdated": {"type": "integer", "description": "Helm release: how many of those images are outdated."},
             "running_version": {"type": "string", "description": "Version reported by the app itself (probes), for floating tags."},
             "latest": {"type": ["string", "null"], "description": "Newest version within the configured track."},
             "latest_any": {"type": ["string", "null"], "description": "Newest version overall, when it differs."},
