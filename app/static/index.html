@@ -5,86 +5,151 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kube-drift</title>
 <style>
+/* Update size is the main signal: a warm ramp from major (red) to patch (ochre). Everything that
+   isn't behind stays quiet so the drift reads first. Lookup errors are violet so they never pass
+   for a major update. */
 :root{
-  --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --muted:#5f6b7a; --line:#e3e6ea;
-  --accent:#2f6fed; --accent-ink:#fff;
-  --ok:#1f7a4d; --ok-bg:#e6f4ec; --warn:#b0570e; --warn-bg:#fff1e3; --unk:#5f6b7a; --unk-bg:#eef0f3; --err:#b3261e; --err-bg:#fdecea;
+  --bg:#f1f3f5; --panel:#ffffff; --ink:#141a21; --muted:#56606d; --faint:#8b95a1; --line:#dbe0e6;
+  --accent:#0d6b67; --accent-ink:#ffffff;
+  --major:#b42318; --major-bg:#fde7e4; --minor:#b5520a; --minor-bg:#fdecd9; --patch:#866400; --patch-bg:#f6edcb;
+  --other:#8a5a2e; --other-bg:#f3e8dc;
+  --ok:#1b6e45; --ok-bg:#e2f1e8; --ok-bar:#a9d8bd; --unk:#56606d; --unk-bg:#e8ebef; --unk-bar:#c3cad3;
+  --err:#7a3db0; --err-bg:#efe5f8;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#0f1216; --panel:#171b21; --ink:#e6e8eb; --muted:#9aa4b1; --line:#2a313a;
-  --accent:#6b9cff; --accent-ink:#0f1216;
-  --ok:#5ccb8b; --ok-bg:#15301f; --warn:#f0a35c; --warn-bg:#3a2611; --unk:#9aa4b1; --unk-bg:#232932; --err:#ff7b72; --err-bg:#3b1a18;
+  --bg:#0d1115; --panel:#151a20; --ink:#e4e8ec; --muted:#9aa3ae; --faint:#6c7682; --line:#28303a;
+  --accent:#4cc2b6; --accent-ink:#0d1115;
+  --major:#ff8b7d; --major-bg:#3a1613; --minor:#f5a65c; --minor-bg:#38230f; --patch:#e2c25c; --patch-bg:#30290e;
+  --other:#d8a87c; --other-bg:#33251a;
+  --ok:#66c992; --ok-bg:#12301f; --ok-bar:#2b5e43; --unk:#9aa3ae; --unk-bg:#222932; --unk-bar:#3a434e;
+  --err:#c9a0f2; --err-bg:#2b1d3c;
 }}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-a{color:var(--accent)}
-header{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
-header h1{font-size:18px;margin:0;letter-spacing:.2px}
-header h1 span{color:var(--muted);font-weight:400}
-.meta{color:var(--muted);font-size:13px}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans)}
+a{color:var(--accent);text-underline-offset:2px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+tr:focus-visible{outline-offset:-2px}
+code,.v{font-family:var(--mono);font-size:12.5px}
 .spacer{flex:1}
-button,.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
-button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
-button:disabled{opacity:.6;cursor:default}
-main{padding:16px 20px;max-width:1500px;margin:0 auto}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer;border-left-width:4px}
-.tile.active{outline:2px solid var(--accent)}
-.tile .n{font-size:26px;font-weight:600;line-height:1.1}
-.tile .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
-.tile.outdated{border-left-color:var(--warn)} .tile.current{border-left-color:var(--ok)} .tile.unknown{border-left-color:var(--unk)} .tile.error{border-left-color:var(--err)} .tile.total{border-left-color:var(--accent)}
-.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
-.chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 12px;cursor:pointer;font-size:13px}
-.chip.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
-input[type=search],select{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 10px;border-radius:8px;font:inherit}
+
+/* header */
+header{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:17px;font-weight:650;margin:0;letter-spacing:-.01em}
+header h1 span{color:var(--muted);font-weight:450;margin-left:6px}
+.meta{color:var(--muted);font-size:13px}
+.out{display:flex;gap:14px;align-items:baseline;font-size:13px}
+.out a{color:var(--muted);text-decoration:none} .out a:hover{color:var(--accent);text-decoration:underline}
+button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:7px;cursor:pointer;font:inherit}
+button:hover{border-color:var(--faint)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
+button:disabled{opacity:.55;cursor:default}
+button.link{border:0;background:none;padding:0 2px;color:var(--accent);font-size:inherit}
+main{padding:18px 24px 40px;max-width:1400px;margin:0 auto}
+
+/* tabs */
+.tabs{display:flex;gap:2px;margin:0 0 22px;border-bottom:1px solid var(--line)}
+.tab{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 12px 9px;color:var(--muted);font-weight:600}
+.tab.on{color:var(--ink);border-bottom-color:var(--ink)}
+.tab .cnt{display:inline-block;margin-left:7px;padding:0 7px;border-radius:999px;background:var(--unk-bg);color:var(--unk);font-size:12px;font-weight:600}
+.tab .cnt.hot{background:var(--minor-bg);color:var(--minor)}
+.tab .cnt:empty{display:none}
+
+/* the drift strip: one sentence and one proportional bar whose segments are filters */
+.strip{margin:0 0 20px}
+.headline{display:flex;flex-wrap:wrap;gap:4px 18px;align-items:baseline;margin:0 0 10px}
+.headline .big{font-size:22px;font-weight:650;letter-spacing:-.015em;line-height:1.25;background:none;border:0;padding:0;color:var(--ink);text-align:left}
+.headline .big.on{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:5px}
+.headline .parts{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13.5px;color:var(--muted)}
+.headline .parts button{border:0;background:none;padding:0;color:inherit;font:inherit;cursor:pointer}
+.headline .parts button.on{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+.headline .parts b{font-weight:650}
+.bar{display:flex;gap:2px;height:14px;border-radius:4px;overflow:hidden}
+.bar button{flex:var(--n) 1 0;min-width:6px;border:0;border-radius:0;padding:0;cursor:pointer;background:var(--c)}
+.bar button:hover{filter:brightness(1.08) saturate(1.1)}
+.bar button.on{box-shadow:inset 0 0 0 2px var(--ink)}
+.bar.dim button:not(.on){opacity:.35}
+.headline .note{font-size:13px;color:var(--muted)}
+.key{display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--c);margin-right:6px;vertical-align:baseline}
+
+/* filters */
+.filters{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin-bottom:12px}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:2px;gap:2px}
+.seg button{border:0;border-radius:6px;padding:4px 10px;font-size:13px;color:var(--muted);background:none}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--panel)}
+input[type=search],select{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 10px;border-radius:8px;font:inherit;font-size:13.5px;min-width:0}
+input[type=search]{width:240px}
 label.tog{display:inline-flex;gap:6px;align-items:center;color:var(--muted);font-size:13px}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-th,td{padding:9px 12px;text-align:left;vertical-align:top;border-top:1px solid var(--line)}
-th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;cursor:pointer;user-select:none;border-top:0;background:var(--panel);position:sticky;top:0}
-th.sorted::after{content:" ▾";color:var(--accent)} th.sorted.asc::after{content:" ▴"}
+.hint{color:var(--muted);font-size:12.5px}
+
+/* tables */
+.tablewrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;vertical-align:top;border-top:1px solid var(--line)}
+th{font-size:12.5px;font-weight:600;color:var(--muted);border-top:0;white-space:nowrap}
+th button{border:0;background:none;padding:0;color:inherit;font:inherit}
+th button:hover{color:var(--ink)}
+th[aria-sort] button::after{content:" ↓";color:var(--accent)} th[aria-sort=ascending] button::after{content:" ↑"}
+.name{font-weight:600;overflow-wrap:anywhere}
+.sub{color:var(--muted);font-size:12.5px}
+.sub > span + span{margin-left:10px}
+tr.row{cursor:pointer}
+tr.row:hover td{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.chev{display:inline-block;width:12px;margin-left:6px;color:var(--faint);transition:transform .12s}
+tr[aria-expanded=true] .chev{transform:rotate(90deg)}
+tr.child td{background:color-mix(in srgb,var(--line) 22%,transparent)}
+tr.child td:first-child{padding-left:26px}
+tr.child .name{font-weight:500}
 tr.grp td{background:var(--bg);font-weight:600;cursor:pointer;user-select:none;padding:7px 12px}
-tr.grp .tw{display:inline-block;width:14px;color:var(--muted)} tr.grp .sub{font-weight:400;margin-left:8px}
-tr.row{cursor:pointer} tr.row:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
-tr.child td{background:color-mix(in srgb,var(--line) 20%,transparent)} tr.child td:first-child{padding-left:28px} tr.child .name{font-weight:500}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
-.badge.outdated{background:var(--warn-bg);color:var(--warn)} .badge.current{background:var(--ok-bg);color:var(--ok)}
-.badge.unknown{background:var(--unk-bg);color:var(--unk)} .badge.error{background:var(--err-bg);color:var(--err)}
-.name{font-weight:600} .sub{color:var(--muted);font-size:12px} code,.v{font-family:var(--mono);font-size:12.5px}
-.v.old{color:var(--warn)} .v.new{color:var(--ok)}
-.hint{color:var(--muted);font-size:12px}
-tr.detail td{background:color-mix(in srgb,var(--line) 35%,transparent);font-size:12.5px;padding:10px 12px 12px 40px}
-tr.detail dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0}
-tr.detail dt{color:var(--muted)} tr.detail dd{margin:0;word-break:break-all;font-family:var(--mono);font-size:12px}
-.empty{padding:30px;text-align:center;color:var(--muted)}
-.scanning{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);animation:p 1s infinite alternate;margin-right:6px}
-@keyframes p{from{opacity:.3}to{opacity:1}}
-.tabs{display:flex;gap:4px;margin:0 0 14px;border-bottom:1px solid var(--line)}
-.tab{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 14px;color:var(--muted);font-weight:600}
-.tab.on{color:var(--ink);border-bottom-color:var(--accent)}
-.tab .cnt{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;background:var(--unk-bg);color:var(--unk);font-size:12px}
-.tab .cnt.hot{background:var(--warn-bg);color:var(--warn)}
-.tile.orphan{border-left-color:var(--warn)} .tile.in-use{border-left-color:var(--ok)} .tile.managed{border-left-color:var(--accent)} .tile.protected{border-left-color:var(--unk)} .tile.ignored{border-left-color:var(--line)}
-.badge.orphan{background:var(--warn-bg);color:var(--warn)} .badge.in-use{background:var(--ok-bg);color:var(--ok)}
-.badge.managed{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
-.badge.protected{background:var(--unk-bg);color:var(--unk)} .badge.ignored{background:var(--unk-bg);color:var(--muted);font-weight:500}
-tr.ign td{opacity:.62}
+tr.grp .sub{font-weight:400;margin-left:10px}
+tr.grp .chev{margin:0 6px 0 0}
+tr.grp[aria-expanded=true] .chev{transform:rotate(90deg)}
+tr.detail td{background:color-mix(in srgb,var(--line) 30%,transparent);padding:12px 12px 14px 26px}
+tr.detail dl{display:grid;grid-template-columns:max-content 1fr;gap:5px 18px;margin:0;font-size:12.5px}
+tr.detail dt{color:var(--muted)}
+tr.detail dd{margin:0;overflow-wrap:anywhere}
+tr.detail dd.v{font-size:12px}
+.empty{padding:36px 12px;text-align:center;color:var(--muted)}
+
+/* versions */
+.badge{display:inline-block;padding:1px 8px;border-radius:5px;font-size:12px;font-weight:650;white-space:nowrap;background:var(--bg-c);color:var(--c)}
+.s-major{--c:var(--major);--bg-c:var(--major-bg)} .s-minor{--c:var(--minor);--bg-c:var(--minor-bg)}
+.s-patch{--c:var(--patch);--bg-c:var(--patch-bg)} .s-other{--c:var(--other);--bg-c:var(--other-bg)}
+.s-current{--c:var(--ok);--bg-c:transparent} .s-unknown{--c:var(--unk);--bg-c:var(--unk-bg)} .s-error{--c:var(--err);--bg-c:var(--err-bg)}
+.badge.s-current{padding-left:0;font-weight:550}
+.ver{overflow-wrap:anywhere}
+.ver .from{color:var(--muted)}
+.ver .to{color:var(--c);font-weight:650}
+.ver .arrow{color:var(--faint);margin:0 5px}
+.imgs-out{color:var(--minor)}
+
+/* orphans */
+.o-orphan{--c:var(--minor);--bg-c:var(--minor-bg)} .o-in-use{--c:var(--ok);--bg-c:var(--ok-bg)}
+.o-managed{--c:var(--accent);--bg-c:color-mix(in srgb,var(--accent) 13%,transparent)}
+.o-protected{--c:var(--unk);--bg-c:var(--unk-bg)} .o-ignored{--c:var(--faint);--bg-c:var(--unk-bg)}
+tr.ign td{opacity:.6}
 td.ck,th.ck{width:34px;padding-right:0;cursor:default}
 .acts{white-space:nowrap;text-align:right}
 .acts button{padding:3px 9px;font-size:12.5px}
-button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 40%,var(--line))}
-.bulk{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:-4px 0 12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+button.danger:hover,button.danger:focus-visible{color:var(--major);border-color:var(--major)}
+@media (hover:hover){
+  #o-rows tr .acts > *{opacity:0;transition:opacity .1s}
+  #o-rows tr:hover .acts > *,#o-rows tr:focus-within .acts > *,#o-rows tr.sel .acts > *{opacity:1}
+}
+.bulk{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 12px;border:1px solid var(--accent);border-radius:10px;background:color-mix(in srgb,var(--accent) 6%,var(--panel))}
 .bulk[hidden],.filters[hidden]{display:none}
-.tab .cnt:empty{display:none}
-.banner{padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:13px;background:var(--unk-bg);color:var(--muted)}
-.banner.err{background:var(--err-bg);color:var(--err)}
+.banner{padding:10px 14px;border-radius:10px;margin-bottom:14px;font-size:13px;background:var(--unk-bg);color:var(--muted)}
 .ev{margin:5px 0 0;padding:0;list-style:none;font-size:12.5px;color:var(--muted)}
-.ev li{display:flex;gap:8px;margin-top:3px}
-.tag{flex:none;width:80px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;line-height:1.75;color:var(--muted)}
-.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag{color:var(--accent)} .ev .leftover .tag{color:var(--warn)}
-.kor{display:flex;gap:8px}
-dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,calc(100vw - 32px));box-shadow:0 20px 60px rgba(0,0,0,.25)}
-dialog::backdrop{background:rgba(10,12,16,.45)}
+.ev li{display:flex;gap:10px;margin-top:3px}
+.tag{flex:none;width:76px;font-size:12px;font-weight:650;color:var(--faint)}
+.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag{color:var(--accent)} .ev .leftover .tag{color:var(--minor)} .ev .protected .tag{color:var(--unk)}
+.kor{display:flex;gap:10px}
+
+/* dialog, toast */
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,calc(100vw - 32px));box-shadow:0 24px 64px rgba(0,0,0,.28)}
+dialog::backdrop{background:rgba(8,12,16,.5)}
 dialog form{padding:18px 20px;display:grid;gap:12px}
 dialog h2{margin:0;font-size:16px}
 dialog .body{font-size:13px;max-height:50vh;overflow:auto}
@@ -93,82 +158,95 @@ dialog ul.list{margin:6px 0;padding-left:18px;font-family:var(--mono);font-size:
 .scopes label{display:flex;gap:8px;align-items:baseline;padding:7px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
 .scopes label:has(input:checked){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .scopes .n{margin-left:auto;color:var(--muted);font-size:12px;white-space:nowrap}
-.rules{width:100%;border:0;border-radius:0;font-size:12.5px}
+.rules{width:100%;font-size:12.5px}
 .rules td{padding:7px 6px;border-top:1px solid var(--line)}
-button.link{border:0;background:none;padding:0 2px;color:var(--accent);font-size:inherit;cursor:pointer}
 dialog pre.script{margin:8px 0 0;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
-dialog .warn{background:var(--warn-bg);color:var(--warn);padding:8px 10px;border-radius:8px;margin:8px 0;font-size:12.5px}
-dialog input[type=text],dialog input[type=password],dialog textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 10px;border-radius:8px;font:inherit}
+dialog .warn{background:var(--minor-bg);color:var(--minor);padding:8px 10px;border-radius:8px;margin:8px 0;font-size:12.5px}
+dialog input[type=text],dialog textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 10px;border-radius:8px;font:inherit}
 dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 .toast{position:fixed;right:16px;bottom:16px;max-width:min(440px,calc(100vw - 32px));background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:10px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.25);z-index:10}
 .toast[hidden]{display:none}
-@media (max-width:800px){ .hide-sm{display:none} header{padding:12px 16px} main{padding:12px 16px}
-  #o-table th,#o-table td{padding:8px 6px} #o-table .name{overflow-wrap:anywhere}
-  .acts{white-space:normal;width:72px} .acts button{display:block;width:100%;margin:0 0 4px} }
+.scanning{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:p 1s infinite alternate;margin-right:6px}
+@keyframes p{from{opacity:.3}to{opacity:1}}
+
+@media (max-width:760px){
+  header{padding:12px 16px} main{padding:14px 16px 32px}
+  .hide-sm{display:none}
+  .headline .big{font-size:19px}
+  .filters > *{flex:1 1 auto} input[type=search]{width:100%}
+  th,td{padding:9px 8px}
+  .ver .arrow{margin:0 4px 0 2px} .ver .to{display:inline-block}
+  th:first-child{width:auto!important}
+  .acts{white-space:normal;width:76px} .acts button{display:block;width:100%;margin:0 0 4px}
+}
+@media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
 </style>
 </head>
 <body>
 <header>
-  <h1>kube-drift <span id="cluster"></span></h1>
-  <div class="meta" id="meta">loading…</div>
+  <h1>kube-drift<span id="cluster"></span></h1>
+  <div class="meta" id="meta" aria-live="polite">loading…</div>
   <div class="spacer"></div>
-  <a class="btn" id="csv" href="/api/drift.csv">CSV</a>
-  <a class="btn" id="json" href="/api/drift" target="_blank">JSON</a>
-  <a class="btn" href="/docs" title="API reference (OpenAPI)">API</a>
-  <button class="primary" id="rescan">Rescan now</button>
+  <nav class="out" aria-label="downloads and API">
+    <a id="csv" href="/api/drift.csv">CSV</a>
+    <a id="json" href="/api/drift" target="_blank">JSON</a>
+    <a href="/docs">API docs</a>
+  </nav>
+  <button class="primary" id="rescan">Rescan</button>
 </header>
 <main>
   <nav class="tabs" role="tablist">
-    <button class="tab on" data-view="versions" role="tab">Version drift <span class="cnt" id="cnt-versions"></span></button>
-    <button class="tab" data-view="orphans" role="tab">Orphaned resources <span class="cnt" id="cnt-orphans"></span></button>
+    <button class="tab on" data-view="versions" role="tab" aria-selected="true">Version drift <span class="cnt" id="cnt-versions"></span></button>
+    <button class="tab" data-view="orphans" role="tab" aria-selected="false">Orphaned resources <span class="cnt" id="cnt-orphans"></span></button>
   </nav>
   <section id="v-versions">
-  <div class="tiles" id="tiles"></div>
+  <div class="strip" id="strip"></div>
   <div class="filters">
-    <span class="chip on" data-cat="">All</span>
-    <span class="chip" data-cat="cluster">Cluster</span>
-    <span class="chip" data-cat="node">Nodes</span>
-    <span class="chip" data-cat="helm">Helm releases</span>
-    <span class="chip" data-cat="manifest">Manifests</span>
-    <span class="chip" data-cat="helm-workload">Helm-managed workloads</span>
-    <select id="ns"><option value="">all namespaces</option></select>
+    <div class="seg" role="group" aria-label="type">
+      <button data-cat="" aria-pressed="true">All</button>
+      <button data-cat="cluster" aria-pressed="false">Cluster</button>
+      <button data-cat="node" aria-pressed="false">Nodes</button>
+      <button data-cat="helm" aria-pressed="false">Helm releases</button>
+      <button data-cat="manifest" aria-pressed="false">Manifests</button>
+      <button data-cat="helm-workload" aria-pressed="false" title="Every image inside a Helm release, listed on its own">Helm images</button>
+    </div>
+    <select id="ns" aria-label="namespace"><option value="">All namespaces</option></select>
     <select id="group" aria-label="group by">
-      <option value="">no grouping</option>
-      <option value="namespace">group by namespace</option>
-      <option value="category">group by type</option>
-      <option value="status">group by status</option>
-      <option value="update">group by update size</option>
-      <option value="install">group by install method</option>
-      <option value="owner">group by GitHub owner</option>
-      <option value="image_host">group by registry</option>
-      <option value="tagstyle">group by tag style</option>
+      <option value="">No grouping</option>
+      <option value="namespace">Group by namespace</option>
+      <option value="category">Group by type</option>
+      <option value="status">Group by status</option>
+      <option value="update">Group by update size</option>
+      <option value="install">Group by install method</option>
+      <option value="owner">Group by GitHub owner</option>
+      <option value="image_host">Group by registry</option>
+      <option value="tagstyle">Group by tag style</option>
     </select>
-    <input type="search" id="q" placeholder="search name / image / version…">
-    <label class="tog"><input type="checkbox" id="drift"> drift only</label>
+    <input type="search" id="q" placeholder="Search name, image or version" aria-label="search">
     <span class="hint" id="count"></span>
   </div>
+  <div class="tablewrap">
   <table>
     <thead><tr>
-      <th data-k="status" style="width:90px">Status</th>
-      <th data-k="name">Component</th>
-      <th data-k="installed">Installed</th>
-      <th data-k="latest">Available</th>
-      <th data-k="install" class="hide-sm">Install</th>
-      <th class="hide-sm">Reference</th>
+      <th data-k="status" style="width:96px"><button>Status</button></th>
+      <th data-k="name"><button>Component</button></th>
+      <th data-k="installed"><button>Version</button></th>
+      <th class="hide-sm">Release notes</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  </div>
   </section>
 
   <section id="v-orphans" hidden>
   <div id="o-banner"></div>
-  <div class="tiles" id="o-tiles"></div>
+  <div class="strip" id="o-strip"></div>
   <div class="filters">
-    <select id="o-kind"><option value="">all kinds</option></select>
-    <select id="o-ns"><option value="">all namespaces</option></select>
-    <input type="search" id="o-q" placeholder="search name / reason…">
-    <label class="tog"><input type="checkbox" id="o-showign"> show ignored</label>
-    <button class="link" id="o-rules">ignore rules</button>
+    <select id="o-kind" aria-label="kind"><option value="">All kinds</option></select>
+    <select id="o-ns" aria-label="namespace"><option value="">All namespaces</option></select>
+    <input type="search" id="o-q" placeholder="Search name or reason" aria-label="search">
+    <label class="tog"><input type="checkbox" id="o-showign"> Show ignored</label>
+    <button class="link" id="o-rules">Ignore rules</button>
     <span class="hint" id="o-count"></span>
   </div>
   <div class="bulk" id="o-bulk" hidden>
@@ -180,17 +258,19 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
     <span class="spacer"></span>
     <button data-bulk="clear">Clear selection</button>
   </div>
+  <div class="tablewrap">
   <table id="o-table">
     <thead><tr>
       <th class="ck"><input type="checkbox" id="o-all" aria-label="select all shown"></th>
-      <th data-ok="status" style="width:110px">Status</th>
-      <th data-ok="name">Resource</th>
-      <th data-ok="reason" class="hide-sm">Why it's flagged</th>
-      <th data-ok="created" class="hide-sm" style="width:80px">Age</th>
-      <th style="width:1%"></th>
+      <th data-ok="status" style="width:110px"><button>Status</button></th>
+      <th data-ok="name"><button>Resource</button></th>
+      <th data-ok="reason" class="hide-sm"><button>Why it's flagged</button></th>
+      <th data-ok="created" class="hide-sm" style="width:70px"><button>Age</button></th>
+      <th style="width:1%"><span class="hide-sm" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></th>
     </tr></thead>
     <tbody id="o-rows"></tbody>
   </table>
+  </div>
   </section>
 </main>
 
@@ -202,98 +282,24 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 <div class="toast" id="toast" hidden></div>
 <script>
 const $ = s => document.querySelector(s);
-const state = { data:null, cat:'', ns:'', q:'', drift:false, group:'', shut:new Set(), sort:'status', asc:true, open:new Set() };
+const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', shut:new Set(), sort:'status', asc:true, open:new Set() };
 try{ state.group=localStorage.getItem('kd.group')||''; }catch{}
 const ost = { data:null, view:'versions', tile:'', kind:'', ns:'', q:'', showIgn:false, sort:'status', asc:true, sel:new Set() };
+const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm image' };
+// Worst first: what you'd act on, then what kube-drift couldn't check, then what's fine.
+const SEV = { major:0, minor:1, patch:2, other:3, error:4, unknown:5, current:6 };
+const SEV_LABEL = { major:'major', minor:'minor', patch:'patch', other:'outdated', error:'error', unknown:'unknown', current:'current' };
+const SEV_TITLE = { major:'A new major version is available', minor:'A new minor version is available', patch:'A new patch release is available',
+  other:'A newer image or version is available', error:"The upstream lookup failed", unknown:"kube-drift can't tell which version is newest", current:'Up to date' };
 const ORDER = { outdated:0, error:1, unknown:2, current:3 };
-const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm-managed workload' };
 
 function rel(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso))/1000; if(s<60) return 'just now';
   if(s<3600) return Math.round(s/60)+' min ago'; if(s<86400) return Math.round(s/3600)+' h ago'; return Math.round(s/86400)+' d ago'; }
 function until(iso){ if(!iso) return ''; const s=(new Date(iso)-Date.now())/1000; return s<=0?'soon':(s<3600?Math.round(s/60)+' min':Math.round(s/3600*10)/10+' h'); }
 function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+const nsLabel = n => n==='-'?'cluster-wide':n;
+const subLine = parts => `<div class="sub">${parts.filter(Boolean).map(p=>`<span>${p}</span>`).join('')}</div>`;
 
-function installedCell(c){
-  let main = c.running_version ? c.running_version : c.installed;
-  let bits = [`<span class="v ${c.status==='outdated'?'old':''}">${esc(main)}</span>`];
-  if(c.running_version) bits.push(`<div class="sub">tag <code>${esc(c.installed)}</code> · probed</div>`);
-  else if(c.category==='helm' && c.installed_app) bits.push(`<div class="sub">app ${esc(c.installed_app)}</div>`);
-  else if(c.floating) bits.push(`<div class="sub">floating tag${c.digest_current===true?' · image current':c.digest_current===false?' · newer image behind tag':''}</div>`);
-  return bits.join('');
-}
-function latestCell(c){
-  if(!c.latest) return `<span class="hint">${c.error?'lookup failed':(c.source&&c.source.type==='none'?'not tracked':'unknown')}</span>`;
-  let bits = [`<span class="v ${c.status==='outdated'?'new':''}">${esc(c.latest)}</span>`];
-  if(c.category==='helm' && c.latest_app) bits.push(`<div class="sub">app ${esc(c.latest_app)}</div>`);
-  if(c.latest_any && c.latest_any!==c.latest) bits.push(`<div class="sub">newer track: ${esc(c.latest_any)}</div>`);
-  return bits.join('');
-}
-function refCell(c){
-  const links=[]; if(c.ref) links.push(`<a href="${esc(c.ref)}" target="_blank" rel="noopener">${esc(host(c.ref))}</a>`);
-  if(c.ref_ah && c.ref_ah!==c.ref) links.push(`<a href="${esc(c.ref_ah)}" target="_blank" rel="noopener">artifacthub</a>`);
-  return links.join(' · ') || '<span class="hint">—</span>';
-}
-function host(u){ try{ const h=new URL(u).hostname.replace(/^www\./,''); const p=new URL(u).pathname.split('/').filter(Boolean); return h==='github.com'&&p.length>=2?`github ${p[0]}/${p[1]}`:h; }catch{ return u; } }
-
-function showCluster(name){ if(!name) return; $('#cluster').textContent='· '+name; document.title='kube-drift · '+name; }
-function render(){
-  const d=state.data; if(!d) return;
-  showCluster(d.cluster);
-  if(ost.view==='versions') $('#meta').innerHTML = (d.scanning?'<span class="scanning"></span>scanning… ':'')+
-    (d.scanned_at?`last scan ${rel(d.scanned_at)} (${d.duration_s}s)`:'no scan yet')+
-    (d.next_scan_at&&!d.scanning?` · next in ${until(d.next_scan_at)}`:'')+
-    (d.last_error?` · <span style="color:var(--err)">last error: ${esc(d.last_error)}</span>`:'');
-  if(ost.view==='versions') $('#rescan').disabled=!!d.scanning;
-  const out=(d.summary||{}).outdated||0; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
-  const all=d.components||[];
-  // Helm-managed containers are listed under their release (expand it), not on their own.
-  const kids=new Map(); all.forEach(c=>{ if(c.release){ if(!kids.has(c.release)) kids.set(c.release,[]); kids.get(c.release).push(c); } });
-  kids.forEach(v=>v.sort((a,b)=>(ORDER[a.status]??9)-(ORDER[b.status]??9)||(a.name+a.image).localeCompare(b.name+b.image)));
-  // tiles
-  const s=d.summary||{}; const tiles=[['outdated','Outdated'],['current','Current'],['unknown','Unknown'],['error','Errors'],['total','Components']];
-  $('#tiles').innerHTML=tiles.filter(([k])=>k==='total'||s[k]).map(([k,l])=>`<div class="tile ${k} ${state.tile===k?'active':''}" data-t="${k}"><div class="n">${s[k]||0}</div><div class="l">${l}</div></div>`).join('');
-  // namespaces
-  const nsSel=$('#ns'); const cur=nsSel.value; const nss=[...new Set(all.map(c=>c.namespace))].sort();
-  nsSel.innerHTML='<option value="">all namespaces</option>'+nss.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
-  // filter
-  let rows=all.filter(c=>{
-    if(state.cat? c.category!==state.cat : c.release) return false;
-    if(state.ns && c.namespace!==state.ns) return false;
-    if(state.tile && state.tile!=='total' && c.status!==state.tile) return false;
-    if(state.drift && c.status!=='outdated' && !c.images_outdated) return false;
-    const hay=x=>[x.name,x.namespace,x.image,x.installed,x.latest,x.running_version,x.note].join(' ').toLowerCase();
-    if(state.q && !hay(c).includes(state.q) && !(state.cat? [] : kids.get(c.id)||[]).some(k=>hay(k).includes(state.q))) return false;
-    return true;
-  });
-  const k=state.sort; rows.sort((a,b)=>{ let x=k==='status'?ORDER[a.status]??9:(a[k]||''), y=k==='status'?ORDER[b.status]??9:(b[k]||'');
-    if(x<y) return state.asc?-1:1; if(x>y) return state.asc?1:-1; return (a.namespace+a.name).localeCompare(b.namespace+b.name); });
-  $('#count').textContent=`${rows.length} shown`;
-  document.querySelectorAll('th[data-k]').forEach(th=>{ th.classList.toggle('sorted',th.dataset.k===k); th.classList.toggle('asc',state.asc); });
-  const rowHtml = (c,child)=>{
-    const open=state.open.has(c.id), ks=!child&&!state.cat? kids.get(c.id)||[] : [];
-    const imgs=ks.length?` · <span class="tw">${open?'▾':'▸'}</span> ${ks.length} image${ks.length===1?'':'s'}`+
-      (c.images_outdated?` <span style="color:var(--warn)">(${c.images_outdated} outdated)</span>`:''):'';
-    const row=`<tr class="row${child?' child':''}" data-id="${esc(c.id)}">
-      <td><span class="badge ${c.status}">${c.status}</span></td>
-      <td><div class="name">${esc(c.name)}</div><div class="sub">${[child?'':c.namespace,c.kind,c.note].filter(Boolean).map(esc).join(' · ')}${imgs}</div></td>
-      <td>${installedCell(c)}</td><td>${latestCell(c)}</td>
-      <td class="hide-sm"><span class="sub">${esc(c.install)}</span></td><td class="hide-sm">${refCell(c)}</td></tr>`;
-    if(!open) return row;
-    const dl=[['id',c.id],['category',CAT[c.category]||c.category],['image',c.image],['source',JSON.stringify(c.source)],['running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['registry digest',c.remote_digest],['probe',c.probe_error||(c.running_version?'ok':'')],['error',c.error],['checked',c.checked_at]]
-      .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
-    return row+`<tr class="detail"><td colspan="6"><dl>${dl}</dl></td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
-  };
-  $('#rows').innerHTML = !rows.length? '<tr><td colspan="6" class="empty">nothing matches</td></tr>'
-    : !state.group? rows.map(c=>rowHtml(c)).join('') : groupRows(rows).map(([key,items])=>{
-      const shut=state.shut.has(key), out=state.group==='status'||state.group==='update'?0:items.filter(c=>c.status==='outdated').length;
-      const label=state.group==='category'?CAT[key]||key:key||GROUP_NONE[state.group]||'—';
-      return `<tr class="grp" data-g="${esc(key)}"><td colspan="6"><span class="tw">${shut?'▸':'▾'}</span>${esc(label)}<span class="sub">${items.length}${out?` · ${out} outdated`:''}</span></td></tr>`
-        +(shut?'':items.map(c=>rowHtml(c)).join(''));
-    }).join('');
-}
-const GROUP_NONE = { update:'not outdated', owner:'not on GitHub', image_host:'not an image', tagstyle:'not an image' };
-const GROUP_ORDER = { status:ORDER, update:{ major:0, minor:1, patch:2, other:3 } };
-const GROUP_KEY = { update:updateSize, owner:ghOwner, tagstyle:c=>c.category==='helm'?'chart version':!c.image_host?'':c.pinned_digest?'pinned digest':c.floating?'floating tag':'version tag' };
 // Which version part an outdated component has to move: major, minor or patch; "other" when the
 // versions aren't numeric (floating tags) or differ only past the patch number.
 function updateSize(c){
@@ -303,6 +309,125 @@ function updateSize(c){
   if(!a||!b) return 'other';
   return ['major','minor','patch'].find((_,i)=>(a[i]||0)!==(b[i]||0))||'other';
 }
+const sev = c => updateSize(c) || (c.status in SEV ? c.status : 'unknown');
+
+function badge(c){ const s=sev(c); return `<span class="badge s-${s}" title="${esc(SEV_TITLE[s])}">${SEV_LABEL[s]}</span>`; }
+function versionCell(c){
+  const cur=c.running_version||c.installed, s=sev(c), behind=c.status==='outdated' && c.latest && c.latest!==cur;
+  let h=`<div class="ver s-${s}"><span class="v ${behind?'from':''}">${esc(cur)||'—'}</span>`+
+    (behind?` <span class="arrow" aria-label="can update to">→</span> <span class="v to">${esc(c.latest)}</span>`:'')+'</div>';
+  const sub=[];
+  if(c.running_version) sub.push(`tag <code>${esc(c.installed)}</code>, version asked from the app`);
+  if(c.category==='helm' && c.installed_app) sub.push(`app ${esc(c.installed_app)}${behind && c.latest_app && c.latest_app!==c.installed_app?' → '+esc(c.latest_app):''}`);
+  if(c.floating && !c.running_version) sub.push(c.digest_current===true?'floating tag, running its current image':c.digest_current===false?'floating tag, a newer image is behind it':'floating tag');
+  if(c.latest_any && c.latest_any!==c.latest) sub.push(`${esc(c.latest_any)} outside your track`);
+  if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':(c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':'no comparable version found'));
+  return h+(sub.filter(Boolean).length?subLine(sub):'');
+}
+function refCell(c){
+  const links=[]; if(c.ref) links.push(`<a href="${esc(c.ref)}" target="_blank" rel="noopener">${esc(host(c.ref))}</a>`);
+  if(c.ref_ah && c.ref_ah!==c.ref) links.push(`<a href="${esc(c.ref_ah)}" target="_blank" rel="noopener">ArtifactHub</a>`);
+  return links.join('<br>') || '<span class="hint">—</span>';
+}
+function host(u){ try{ const h=new URL(u).hostname.replace(/^www\./,''); const p=new URL(u).pathname.split('/').filter(Boolean); return h==='github.com'&&p.length>=2?`${p[0]}/${p[1]}`:h; }catch{ return u; } }
+function describeSource(c){
+  const s=c.source||{};
+  switch(s.type){
+    case 'registry': return 'newest tag of the same shape in its registry';
+    case 'artifacthub': return `ArtifactHub chart ${s.repo}/${s.chart||c.image.replace(/^chart /,'')}`;
+    case 'artifacthub-search': return `ArtifactHub search for “${s.chart||c.image.replace(/^chart /,'')}”`;
+    case 'github': return `GitHub releases of ${s.repo}`;
+    case 'k8s': return 'Kubernetes release channel';
+    case 'oci': return `chart tags at ${s.ref}`;
+    case 'none': return 'not tracked (config)';
+    default: return JSON.stringify(s);
+  }
+}
+
+function showCluster(name){ if(!name) return; $('#cluster').textContent=name; document.title='kube-drift · '+name; }
+function setMeta(d, noun, busy){
+  $('#meta').innerHTML=(d.scanning?`<span class="scanning"></span>${busy}. `:'')+
+    (d.scanned_at?`Last ${noun} ${rel(d.scanned_at)}`:(d.scanning?'':`No ${noun} yet`))+
+    (d.kor_version?`, kor ${esc(d.kor_version)}`:'')+
+    (d.next_scan_at&&!d.scanning?`, next in ${until(d.next_scan_at)}`:'')+
+    (d.last_error?`. <span style="color:var(--major)">Last scan failed: ${esc(d.last_error)}</span>`:'');
+  $('#rescan').disabled=!!d.scanning;
+}
+
+// The strip: a sentence and a bar. Segments filter the table; picking the active one clears it.
+function strip(el, {headline, headOn, headKey, parts, segs, active, attr}){
+  const any=segs.some(x=>x.n);
+  el.innerHTML=`<div class="headline"><button class="big ${headOn?'on':''}" ${attr}="${headKey}" aria-pressed="${!!headOn}">${headline}</button>
+    <div class="parts">${parts.map(p=>p.n?`<button ${attr}="${p.k}" aria-pressed="${active===p.k}" class="${active===p.k?'on':''}"><span class="key" style="--c:var(${p.c})"></span><b>${p.n}</b> ${esc(p.l)}</button>`:'').join('')}</div></div>`+
+    (any?`<div class="bar ${active?'dim':''}">${segs.filter(x=>x.n).map(x=>`<button ${attr}="${x.k}" style="--n:${x.n};--c:var(${x.c})" class="${active===x.k?'on':''}" aria-pressed="${active===x.k}" aria-label="${x.n} ${esc(x.l)}" title="${x.n} ${esc(x.l)}"></button>`).join('')}</div>`:'');
+}
+
+function render(){
+  const d=state.data; if(!d) return;
+  showCluster(d.cluster);
+  if(ost.view==='versions') setMeta(d,'scan','Scanning');
+  const all=d.components||[];
+  const top=all.filter(c=>!c.release);
+  const out=top.filter(c=>c.status==='outdated').length; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
+  // Helm-managed containers are listed under their release (expand it), not on their own.
+  const kids=new Map(); all.forEach(c=>{ if(c.release){ if(!kids.has(c.release)) kids.set(c.release,[]); kids.get(c.release).push(c); } });
+  kids.forEach(v=>v.sort((a,b)=>SEV[sev(a)]-SEV[sev(b)]||(a.name+a.image).localeCompare(b.name+b.image)));
+  // strip
+  const n={}; top.forEach(c=>{ const s=sev(c); n[s]=(n[s]||0)+1; });
+  const imgRel=top.filter(c=>c.status!=='outdated' && c.images_outdated).length;
+  const seg=(k,l,c)=>({k,l,c,n:n[k]||0});
+  const segs=[seg('major','major','--major'),seg('minor','minor','--minor'),seg('patch','patch','--patch'),seg('other','other updates','--other'),
+    seg('error','lookup errors','--err'),seg('unknown','unknown','--unk-bar'),seg('current','current','--ok-bar')];
+  strip($('#strip'),{
+    headline: !d.scanned_at? (d.scanning?'Scanning the cluster…':'No scan yet') : out? `${out} of ${top.length} behind upstream` : `All ${top.length} components are current`,
+    headOn: state.tile==='outdated', headKey:'outdated', attr:'data-t', active:state.tile,
+    parts:[seg('major','major','--major'),seg('minor','minor','--minor'),seg('patch','patch','--patch'),seg('other','other','--other'),
+      seg('error','lookup errors','--err'),seg('unknown','unknown','--unk-bar')],
+    segs,
+  });
+  if(imgRel) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${imgRel} more Helm release${imgRel===1?' ships':'s ship'} outdated images</span>`);
+  // namespaces
+  const nsSel=$('#ns'); const cur=nsSel.value; const nss=[...new Set(all.map(c=>c.namespace))].sort();
+  nsSel.innerHTML='<option value="">All namespaces</option>'+nss.map(n=>`<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(nsLabel(n))}</option>`).join('');
+  // filter
+  const hay=x=>[x.name,x.namespace,x.image,x.installed,x.latest,x.running_version,x.note].join(' ').toLowerCase();
+  let rows=all.filter(c=>{
+    if(state.cat? c.category!==state.cat : c.release) return false;
+    if(state.ns && c.namespace!==state.ns) return false;
+    if(state.tile==='outdated'){ if(c.status!=='outdated' && !c.images_outdated) return false; }
+    else if(state.tile && sev(c)!==state.tile) return false;
+    if(state.q && !hay(c).includes(state.q) && !(state.cat? [] : kids.get(c.id)||[]).some(k=>hay(k).includes(state.q))) return false;
+    return true;
+  });
+  const k=state.sort; rows.sort((a,b)=>{ let x=k==='status'?SEV[sev(a)]:(a[k]||''), y=k==='status'?SEV[sev(b)]:(b[k]||'');
+    if(x<y) return state.asc?-1:1; if(x>y) return state.asc?1:-1; return (a.namespace+a.name).localeCompare(b.namespace+b.name); });
+  $('#count').textContent=`${rows.length} shown`;
+  document.querySelectorAll('th[data-k]').forEach(th=>{ th.dataset.k===k? th.setAttribute('aria-sort',state.asc?'ascending':'descending') : th.removeAttribute('aria-sort'); });
+  const rowHtml = (c,child)=>{
+    const open=state.open.has(c.id), ks=!child&&!state.cat? kids.get(c.id)||[] : [];
+    const imgs=ks.length?`${ks.length} image${ks.length===1?'':'s'}`+(c.images_outdated?`, <span class="imgs-out">${c.images_outdated} outdated</span>`:''):'';
+    const row=`<tr class="row${child?' child':''}" data-id="${esc(c.id)}" tabindex="0" aria-expanded="${open}">
+      <td>${badge(c)}</td>
+      <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
+      <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
+    if(!open) return row;
+    const dl=[['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+      ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
+      ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
+      .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
+    return row+`<tr class="detail"><td colspan="4"><dl>${dl}</dl></td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
+  };
+  $('#rows').innerHTML = !rows.length? `<tr><td colspan="4" class="empty">${d.scanned_at?'Nothing matches these filters.':'Waiting for the first scan.'}</td></tr>`
+    : !state.group? rows.map(c=>rowHtml(c)).join('') : groupRows(rows).map(([key,items])=>{
+      const shut=state.shut.has(key), out=state.group==='status'||state.group==='update'?0:items.filter(c=>c.status==='outdated').length;
+      const label=state.group==='category'?CAT[key]||key:state.group==='namespace'?nsLabel(key):key||GROUP_NONE[state.group]||'—';
+      return `<tr class="grp" data-g="${esc(key)}" tabindex="0" aria-expanded="${!shut}"><td colspan="4"><span class="chev" aria-hidden="true">›</span>${esc(label)}<span class="sub">${items.length}${out?`, ${out} outdated`:''}</span></td></tr>`
+        +(shut?'':items.map(c=>rowHtml(c)).join(''));
+    }).join('');
+}
+const GROUP_NONE = { update:'not outdated', owner:'not on GitHub', image_host:'not an image', tagstyle:'not an image' };
+const GROUP_ORDER = { status:ORDER, update:{ major:0, minor:1, patch:2, other:3 } };
+const GROUP_KEY = { update:updateSize, owner:ghOwner, tagstyle:c=>c.category==='helm'?'chart version':!c.image_host?'':c.pinned_digest?'pinned digest':c.floating?'floating tag':'version tag' };
 // GitHub org/user behind a component: its GitHub release source, else a github.com reference link, else a ghcr.io image.
 function ghOwner(c){
   if(c.source?.type==='github' && c.source.repo) return c.source.repo.split('/')[0].toLowerCase();
@@ -315,25 +440,29 @@ function groupRows(rows){
   return [...g].sort(([a],[b])=>(!a-!b)||(GROUP_ORDER[state.group]?(GROUP_ORDER[state.group][a]??9)-(GROUP_ORDER[state.group][b]??9):0)||String(a).localeCompare(String(b)));
 }
 
-async function load(){ try{ const r=await fetch('/api/drift',{cache:'no-store'}); state.data=await r.json(); render(); }catch(e){ $('#meta').textContent='cannot reach API: '+e; } }
+async function load(){ try{ const r=await fetch('/api/drift',{cache:'no-store'}); state.data=await r.json(); render(); }catch(e){ $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
+// Rows and group headers are focusable: Enter or Space toggles them like a click.
+document.addEventListener('keydown',e=>{
+  if((e.key==='Enter'||e.key===' ') && e.target.matches('tr.row,tr.grp')){ e.preventDefault(); e.target.click(); }
+});
+function refocus(sel){ const el=document.querySelector(sel); if(el) el.focus({preventScroll:true}); }
 document.addEventListener('click',e=>{
   if(!e.target.closest('#v-versions')) return;
-  const chip=e.target.closest('.chip'); if(chip){ document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c===chip)); state.cat=chip.dataset.cat; render(); return; }
-  const tile=e.target.closest('.tile'); if(tile){ state.tile=state.tile===tile.dataset.t?'':tile.dataset.t; render(); return; }
-  const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); return; }
-  const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); return; }
-  const row=e.target.closest('tr.row'); if(row && !e.target.closest('a')){ const id=row.dataset.id; state.open.has(id)?state.open.delete(id):state.open.add(id); render(); }
+  const chip=e.target.closest('[data-cat]'); if(chip){ state.cat=chip.dataset.cat; document.querySelectorAll('[data-cat]').forEach(c=>c.setAttribute('aria-pressed',c===chip)); render(); return; }
+  const tile=e.target.closest('[data-t]'); if(tile){ const t=tile.dataset.t; state.tile=state.tile===t?'':t; render(); refocus(`#strip .headline [data-t="${t}"]`); return; }
+  const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); refocus(`th[data-k="${th.dataset.k}"] button`); return; }
+  const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); refocus(`tr.grp[data-g="${CSS.escape(g)}"]`); return; }
+  const row=e.target.closest('tr.row'); if(row && !e.target.closest('a')){ const id=row.dataset.id; state.open.has(id)?state.open.delete(id):state.open.add(id); render(); refocus(`tr.row[data-id="${CSS.escape(id)}"]`); }
 });
 $('#ns').addEventListener('change',e=>{ state.ns=e.target.value; render(); });
 $('#group').value=state.group;
 $('#group').addEventListener('change',e=>{ state.group=e.target.value; state.shut.clear(); try{ localStorage.setItem('kd.group',state.group); }catch{} render(); });
 $('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
-$('#drift').addEventListener('change',e=>{ state.drift=e.target.checked; render(); });
 $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+ost.view,{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
 
 /* ------------------------------------------------------------------ orphaned resources */
 const OORDER = { orphan:0, managed:1, 'in-use':2, protected:3, ignored:4 };
-const OTILES = [['orphan','Orphaned'],['in-use','In use · kor missed it'],['managed','Managed · would come back'],['protected','Protected'],['ignored','Ignored']];
+const OSEG = [['orphan','orphaned','--minor'],['in-use','in use (kor missed it)','--ok-bar'],['managed','managed (would come back)','--accent'],['protected','protected','--unk-bar'],['ignored','ignored','--line']];
 const BADGE = { 'in-use':['in use','Something uses it that kor does not check — kor is wrong here'], managed:['managed','Its owner would put it back if you deleted it'],
   orphan:['orphan','Nothing uses or manages it'], protected:['protected','Never offered a delete command'], ignored:['ignored','Hidden from the counts'] };
 const TAG = { 'in-use':'In use', recreated:'Recreated', leftover:'Leftover', gone:'Gone?' };
@@ -451,21 +580,22 @@ async function doCommands(ids, action){
 function renderO(){
   const d=ost.data; if(!d) return;
   if(ost.view==='orphans'){
-    $('#meta').innerHTML=(d.scanning?'<span class="scanning"></span>scanning with kor… ':'')+(d.scanned_at?`last orphan scan ${rel(d.scanned_at)} (${d.duration_s}s)`:(d.scanning?'':'no orphan scan yet'))+
-      (d.kor_version?` · kor ${esc(d.kor_version)}`:'')+(d.next_scan_at&&!d.scanning?` · next in ${until(d.next_scan_at)}`:'')+
-      (d.last_error?` · <span style="color:var(--err)">last error: ${esc(d.last_error)}</span>`:'');
-    $('#rescan').disabled=!!d.scanning;
+    setMeta(d,'orphan scan','kor is scanning every namespace, which takes a few minutes');
   }
   const s=d.summary||{}; $('#cnt-orphans').textContent=s.orphan||''; $('#cnt-orphans').classList.toggle('hot',(s.orphan||0)>0);
   const ro=!d.ignore_enabled;
   $('#o-banner').innerHTML=(ro?`<div class="banner">Ignores can't be saved: the data directory isn't writable.</div>`:'')+
     ((d.warnings||[]).length?`<details class="banner"><summary>${d.warnings.length} scan warning(s)</summary><ul>${d.warnings.map(w=>`<li><code>${esc(w)}</code></li>`).join('')}</ul></details>`:'');
-  $('#o-tiles').innerHTML=OTILES.map(([k,l])=>`<div class="tile ${k} ${ost.tile===k?'active':''}" data-ot="${k}"><div class="n">${s[k]||0}</div><div class="l">${l}</div></div>`).join('');
+  const oseg=OSEG.map(([k,l,c])=>({k,l,c,n:s[k]||0})), no=s.orphan||0;
+  strip($('#o-strip'),{
+    headline: !d.scanned_at? (d.scanning?'kor is scanning the cluster…':'No orphan scan yet') : no? `${no} orphaned resource${no===1?'':'s'}` : 'No orphaned resources',
+    headOn: ost.tile==='orphan', headKey:'orphan', attr:'data-ot', active:ost.tile, parts:oseg.slice(1), segs:oseg,
+  });
   const all=d.items||[];
   const nsKey=i=>i.namespace||'(cluster-scoped)';
   const fill=(sel,vals,label)=>{ const cur=sel.value; sel.innerHTML=`<option value="">${label}</option>`+vals.map(v=>`<option ${v===cur?'selected':''}>${esc(v)}</option>`).join(''); };
-  fill($('#o-kind'),[...new Set(all.map(i=>i.kind))].sort(),'all kinds');
-  fill($('#o-ns'),[...new Set(all.map(nsKey))].sort(),'all namespaces');
+  fill($('#o-kind'),[...new Set(all.map(i=>i.kind))].sort(),'All kinds');
+  fill($('#o-ns'),[...new Set(all.map(nsKey))].sort(),'All namespaces');
   const showIgn=ost.showIgn||ost.tile==='ignored';
   let rows=all.filter(i=>{
     const st=ostatus(i);
@@ -481,7 +611,7 @@ function renderO(){
     if(x<y) return ost.asc?-1:1; if(x>y) return ost.asc?1:-1; return (a.kind+a.namespace+a.name).localeCompare(b.kind+b.namespace+b.name); });
   const ids=new Set(all.map(i=>i.id)); [...ost.sel].forEach(id=>{ if(!ids.has(id)) ost.sel.delete(id); });
   $('#o-count').textContent=`${rows.length} shown`;
-  document.querySelectorAll('th[data-ok]').forEach(th=>{ th.classList.toggle('sorted',th.dataset.ok===k); th.classList.toggle('asc',ost.asc); });
+  document.querySelectorAll('th[data-ok]').forEach(th=>{ th.dataset.ok===k? th.setAttribute('aria-sort',ost.asc?'ascending':'descending') : th.removeAttribute('aria-sort'); });
   $('#o-all').checked=rows.length>0 && rows.every(i=>ost.sel.has(i.id));
   $('#o-bulk').hidden=!ost.sel.size; $('#o-selcount').textContent=`${ost.sel.size} selected`;
   $('#o-rows').innerHTML=rows.length?rows.map(i=>{
@@ -495,22 +625,22 @@ function renderO(){
     const acts=[ro?'':ign?(i.ignored.by==='dashboard'?`<button data-act="unignore">Unignore</button>`:`<button data-act="rules">Rule…</button>`):`<button data-act="ignore">Ignore</button>`,
       i.known_kind?`<button data-act="export" title="command to export as JSON">Export</button>`:'',
       i.known_kind && i.status!=='protected'?`<button data-act="delete" class="danger" title="command to back up and delete">Delete</button>`:''].join(' ');
-    return `<tr class="${ign?'ign':''}" data-oid="${esc(i.id)}">
+    return `<tr class="${ign?'ign':''} ${ost.sel.has(i.id)?'sel':''}" data-oid="${esc(i.id)}">
       <td class="ck"><input type="checkbox" data-sel ${ost.sel.has(i.id)?'checked':''} aria-label="select ${esc(label(i))}"></td>
-      <td><span class="badge ${st}" title="${esc((BADGE[st]||[])[1]||'')}">${esc((BADGE[st]||[st])[0])}</span></td>
-      <td><div class="name">${esc(i.name)}</div><div class="sub">${esc(i.kind)}${i.namespace?' · '+esc(i.namespace):' · cluster-scoped'}</div></td>
+      <td><span class="badge o-${st}" title="${esc((BADGE[st]||[])[1]||'')}">${esc((BADGE[st]||[st])[0])}</span></td>
+      <td><div class="name">${esc(i.name)}</div>${subLine([esc(i.kind),i.namespace?esc(i.namespace):'cluster-scoped'])}</td>
       <td class="hide-sm">${why}</td>
       <td class="hide-sm"><span class="sub" title="${esc(i.created||'')}">${age(i.created)}</span></td>
       <td class="acts">${acts}</td></tr>`;
-  }).join(''):`<tr><td colspan="6" class="empty">${d.scanned_at?'nothing matches':(d.scanning?'kor is scanning the cluster — this takes a few minutes':'no scan yet')}</td></tr>`;
+  }).join(''):`<tr><td colspan="6" class="empty">${d.scanned_at?'Nothing matches these filters.':(d.scanning?'kor is scanning the cluster, which takes a few minutes.':'No orphan scan yet.')}</td></tr>`;
 }
 
-async function loadO(){ try{ const r=await fetch('/api/orphans',{cache:'no-store'}); ost.data=await r.json(); renderO(); }catch(e){ if(ost.view==='orphans') $('#meta').textContent='cannot reach API: '+e; } }
+async function loadO(){ try{ const r=await fetch('/api/orphans',{cache:'no-store'}); ost.data=await r.json(); renderO(); }catch(e){ if(ost.view==='orphans') $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
 function dispatch(a, ids){ return a==='ignore'?doIgnore(ids):a==='unignore'?doUnignore(ids):a==='rules'?showRules():doCommands(ids,a); }
 async function run(fn){ try{ await fn(); }catch(e){ toast('Failed: '+esc(e.message||e),8000); } }
 
 function setView(v){
-  ost.view=v; document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.view===v));
+  ost.view=v; document.querySelectorAll('.tab').forEach(t=>{ t.classList.toggle('on',t.dataset.view===v); t.setAttribute('aria-selected',t.dataset.view===v); });
   $('#v-versions').hidden=v!=='versions'; $('#v-orphans').hidden=v!=='orphans';
   $('#csv').hidden=v!=='versions'; $('#json').href=v==='versions'?'/api/drift':'/api/orphans';
   try{ history.replaceState(null,'',v==='orphans'?'#orphans':location.pathname); }catch{}
@@ -519,8 +649,8 @@ function setView(v){
 document.addEventListener('click',e=>{
   const tab=e.target.closest('.tab'); if(tab){ setView(tab.dataset.view); return; }
   if(!e.target.closest('#v-orphans')) return;
-  const t=e.target.closest('[data-ot]'); if(t){ ost.tile=ost.tile===t.dataset.ot?'':t.dataset.ot; renderO(); return; }
-  const th=e.target.closest('th[data-ok]'); if(th){ if(ost.sort===th.dataset.ok) ost.asc=!ost.asc; else { ost.sort=th.dataset.ok; ost.asc=true; } renderO(); return; }
+  const t=e.target.closest('[data-ot]'); if(t){ const k=t.dataset.ot; ost.tile=ost.tile===k?'':k; renderO(); refocus(`#o-strip .headline [data-ot="${k}"]`); return; }
+  const th=e.target.closest('th[data-ok]'); if(th){ if(ost.sort===th.dataset.ok) ost.asc=!ost.asc; else { ost.sort=th.dataset.ok; ost.asc=true; } renderO(); refocus(`th[data-ok="${th.dataset.ok}"] button`); return; }
   const act=e.target.closest('[data-act]'); if(act){ const id=act.closest('tr').dataset.oid;
     run(()=>dispatch(act.dataset.act,[id])); return; }
   const bulk=e.target.closest('[data-bulk]'); if(bulk){ const ids=[...ost.sel];
@@ -528,8 +658,8 @@ document.addEventListener('click',e=>{
     run(()=>dispatch(bulk.dataset.bulk,ids)); return; }
 });
 document.addEventListener('change',e=>{
-  if(e.target.matches('[data-sel]')){ const id=e.target.closest('tr').dataset.oid; e.target.checked?ost.sel.add(id):ost.sel.delete(id); renderO(); }
-  else if(e.target.id==='o-all'){ document.querySelectorAll('#o-rows tr[data-oid]').forEach(tr=>{ e.target.checked?ost.sel.add(tr.dataset.oid):ost.sel.delete(tr.dataset.oid); }); renderO(); }
+  if(e.target.matches('[data-sel]')){ const id=e.target.closest('tr').dataset.oid; e.target.checked?ost.sel.add(id):ost.sel.delete(id); renderO(); refocus(`tr[data-oid="${CSS.escape(id)}"] [data-sel]`); }
+  else if(e.target.id==='o-all'){ document.querySelectorAll('#o-rows tr[data-oid]').forEach(tr=>{ e.target.checked?ost.sel.add(tr.dataset.oid):ost.sel.delete(tr.dataset.oid); }); renderO(); refocus('#o-all'); }
   else if(e.target.id==='o-kind'){ ost.kind=e.target.value; renderO(); }
   else if(e.target.id==='o-ns'){ ost.ns=e.target.value; renderO(); }
   else if(e.target.id==='o-showign'){ ost.showIgn=e.target.checked; renderO(); }
