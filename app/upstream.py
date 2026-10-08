@@ -32,8 +32,9 @@ HOST_ALIASES = {
 _token_lock = threading.Lock()
 _tokens: dict[str, str] = {}
 
-# OCI labels by image digest. A digest's content never changes, so this outlives scans (and is
-# saved under DATA_DIR): a manifest GET counts against Docker Hub's anonymous pull limit.
+# What was read from a digest: an image's OCI labels, or a Helm chart's metadata (chart_meta).
+# A digest's content never changes, so this outlives scans (and is saved under DATA_DIR): a
+# manifest GET counts against Docker Hub's anonymous pull limit.
 _labels_lock = threading.Lock()
 _labels: dict[str, dict] = {}
 INDEX_TYPES = ("application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json")
@@ -266,6 +267,27 @@ class Registry:
             _labels[digest] = found
         return found
 
+    def chart_meta(self, host: str, repo: str, digest: str) -> dict:
+        """{"kube_version": <range>} of a Helm chart pushed to an OCI registry, by manifest digest.
+        Helm stores the chart's Chart.yaml as JSON in the config blob, so the chart itself is never
+        pulled. kube_version is "" when the chart sets none; {} if it can't be read (not cached)."""
+        with _labels_lock:
+            if digest in _labels:
+                return _labels[digest]
+        try:
+            m = self._call(host, repo, f"manifests/{digest}", accept=MANIFEST_ACCEPT).json()
+            cfg = m.get("config") or {}
+            if cfg.get("mediaType") != "application/vnd.cncf.helm.config.v1+json":
+                return {}
+            kv = self._call(host, repo, f"blobs/{cfg['digest']}").json().get("kubeVersion")
+        except (HttpError, ValueError, KeyError, AttributeError) as e:
+            log.info("chart metadata %s/%s@%s: %s", host, repo, digest[:19], e)
+            return {}
+        found = {"kube_version": kv.strip()[:200] if isinstance(kv, str) else ""}
+        with _labels_lock:
+            _labels[digest] = found
+        return found
+
     @functools.lru_cache(maxsize=512)
     def digest(self, host: str, repo: str, tag: str) -> Optional[str]:
         r = self._call(host, repo, f"manifests/{tag}", method="HEAD", accept=MANIFEST_ACCEPT)
@@ -315,6 +337,7 @@ def artifacthub_package(repo: str, chart: str) -> Optional[dict]:
         "app_version": p.get("app_version"),
         "ref": f"{AH}/packages/helm/{repo}/{chart}",
         "home": p.get("home_url"),
+        "kube_version": (p.get("data") or {}).get("kubeVersion") or None,  # the chart's Kubernetes range
     }
 
 

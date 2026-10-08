@@ -197,6 +197,9 @@ SPEC: dict = {
             "latest": {"type": ["string", "null"], "description": "Newest version within the configured track."},
             "latest_any": {"type": ["string", "null"], "description": "Newest version overall, when it differs."},
             "latest_app": {"type": ["string", "null"], "description": "Helm: appVersion of the latest chart."},
+            "incompatible": {"type": "string", "description": "Why `latest` can't be installed on this cluster, e.g. the "
+                             "chart's `kubeVersion` range excludes the control plane's version. Absent when it can, or "
+                             "when kube-drift can't tell."},
             "track": {"enum": ["any", "major", "minor"]},
             "image": {"type": "string"}, "image_host": {"type": "string"}, "image_repo": {"type": "string"}, "tag": {"type": "string"},
             "floating": {"type": "boolean", "description": "The tag carries no version (latest, main…)."},

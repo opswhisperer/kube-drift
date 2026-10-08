@@ -1,9 +1,10 @@
 import unittest
+from unittest import mock
 
 from app.scan import Scanner
 from tests.fake_k8s import FakeK8s
 from app.upstream import split_image
-from app.versions import cmp_versions, is_floating, pick_latest
+from app.versions import cmp_versions, is_floating, pick_latest, satisfies
 
 
 class SplitImage(unittest.TestCase):
@@ -45,6 +46,55 @@ class Versions(unittest.TestCase):
     def test_loose_suffix_first_party(self):
         tags = ["0.0.161-589c824437-r1", "0.0.162-aaaaaaaaaa-r1", "0.0.162-aaaaaaaaaa-rc1"]
         self.assertEqual(pick_latest("0.0.161-589c824437-r1", tags, loose_suffix=True)["latest"], "0.0.162-aaaaaaaaaa-r1")
+
+
+class KubeVersionRange(unittest.TestCase):
+    def test_satisfies(self):
+        cases = [
+            ("v1.24.3", ">=1.25.0-0", False), ("v1.29.3-eks-1a2b", ">=1.25.0-0", True),
+            ("v1.31.0+k3s1", ">= 1.19, < 1.30", False), ("v1.29.9", ">= 1.19 < 1.30", True),
+            ("1.28.4", "~1.28", True), ("1.29.0", "~1.28", False), ("1.29.5", "1.26 - 1.29", True),
+            ("1.30.1", "1.26 - 1.29", False), ("1.30.1", "1.26 - 1.29 || >=1.30", True),
+            ("1.28.0", "1.28.x", True), ("1.27.9", "^1.28", False), ("1.27.0", "!=1.27.0", False),
+        ]
+        for v, c, want in cases:
+            self.assertIs(satisfies(v, c), want, f"{v} {c}")
+        self.assertIsNone(satisfies("1.28.0", "not a range"))
+        self.assertIsNone(satisfies("1.28.0", ""))
+        self.assertIsNone(satisfies("", ">=1.20"))
+
+
+class Incompatible(unittest.TestCase):
+    """A chart update whose kubeVersion excludes the cluster's version says why."""
+
+    def chart(self, kube_version):
+        sc = Scanner(FakeK8s(), {})
+        sc.kube_version = "v1.24.3"
+        comp = {"installed": "1.0.0"}
+        sc._apply_chart(comp, {"version": "2.0.0", "kube_version": kube_version})
+        return comp
+
+    def test_flagged_with_reason(self):
+        comp = self.chart(">=1.25.0-0")
+        self.assertEqual(comp["status"], "outdated")
+        self.assertEqual(comp["incompatible"], "chart 2.0.0 needs Kubernetes >=1.25.0-0; the cluster runs v1.24.3")
+
+    def test_compatible_or_unknown_range(self):
+        for kv in (">=1.20.0-0", None, "garbage!"):
+            self.assertNotIn("incompatible", self.chart(kv), kv)
+
+    def test_oci_chart(self):
+        sc = Scanner(FakeK8s(), {})
+        sc.kube_version = "v1.24.3"
+        sc.reg = mock.Mock()
+        sc.reg.tags.return_value = ("1.0.0", "1.1.0", "2.0.0")
+        sc.reg.digest.return_value = "sha256:m"
+        sc.reg.chart_meta.return_value = {"kube_version": ">=1.25.0-0"}
+        comp = sc.resolve({"installed": "1.0.0", "image": "chart widget", "source": {"type": "oci", "ref": "reg.example/charts/widget"}})
+        self.assertEqual((comp["status"], comp["latest"]), ("outdated", "2.0.0"))
+        self.assertEqual(comp["incompatible"], "chart 2.0.0 needs Kubernetes >=1.25.0-0; the cluster runs v1.24.3")
+        sc.reg.digest.assert_called_with("reg.example", "charts/widget", "2.0.0")
+        self.assertIn("sha256:m", sc.label_digests)
 
 
 class HelmNesting(unittest.TestCase):

@@ -119,3 +119,64 @@ def pick_latest(installed_tag: str, candidates: Iterable[str], track: str = "any
         latest = render(tpl, best_track)
         latest_any = render(tpl, best_any) if best_any else None
     return {"latest": latest, "latest_any": latest_any, "outdated": best_track > cur}
+
+
+_TERM_RE = re.compile(r"^(>=|<=|=<|!=|~>|=|<|>|~|\^)?v?(\d+|[xX*])(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?(?:[-+]\S*)?$")
+
+
+def _term(op: str, parts: tuple[int, ...], v: tuple[int, int, int]) -> bool:
+    """One semver comparison; `parts` holds the numbers given before any wildcard."""
+    n = len(parts)
+    lo = parts + (0,) * (3 - n)
+    nxt = (parts[:-1] + (parts[-1] + 1,) + (0,) * (3 - n)) if n else None  # first version past the prefix
+    if op in ("", "="):
+        return n == 0 or (v == lo if n == 3 else lo <= v < nxt)
+    if op == "!=":
+        return not _term("=", parts, v)
+    if op == ">":
+        return n == 0 or (v > lo if n == 3 else v >= nxt)
+    if op == ">=":
+        return v >= lo
+    if op == "<":
+        return n > 0 and v < lo
+    if op in ("<=", "=<"):
+        return n == 0 or (v <= lo if n == 3 else v < nxt)
+    if op in ("~", "~>"):
+        return n == 0 or lo <= v < ((lo[0] + 1, 0, 0) if n == 1 else (lo[0], lo[1] + 1, 0))
+    # ^: the leftmost non-zero part given stays fixed
+    if n == 0:
+        return True
+    if lo[0] or n == 1:
+        return lo <= v < (lo[0] + 1, 0, 0)
+    if lo[1] or n == 2:
+        return lo <= v < (0, lo[1] + 1, 0)
+    return lo <= v < (0, 0, lo[2] + 1)
+
+
+def satisfies(version: str, constraint: str) -> Optional[bool]:
+    """Whether `version` meets a Helm `kubeVersion` range such as '>=1.25.0-0', '>= 1.19, < 1.30',
+    '~1.28' or '1.26 - 1.29 || ^2'. Pre-release and build suffixes are ignored on both sides
+    (charts write '-0' so that 'v1.29.3-eks-1a2b' counts as 1.29.3). None if it can't be parsed."""
+    m = CORE_RE.search(version or "")
+    if not m or not (constraint or "").strip():
+        return None
+    v = tuple(int(p) for p in m.group(1).split(".")[:3])
+    v += (0,) * (3 - len(v))
+    result = False
+    for alt in constraint.split("||"):
+        alt = re.sub(r"(\S+)\s+-\s+(\S+)", r">=\1 <=\2", alt.strip())  # hyphen range
+        alt = re.sub(r"(>=|<=|=<|!=|~>|[<>=~^])\s+", r"\1", alt)
+        terms = [t for t in re.split(r"[\s,]+", alt) if t]
+        ok = True
+        for t in terms:
+            tm = _TERM_RE.match(t)
+            if not tm:
+                return None
+            parts: list[int] = []
+            for p in tm.groups()[1:]:
+                if p is None or not p.isdigit():
+                    break
+                parts.append(int(p))
+            ok = ok and _term(tm.group(1) or "", tuple(parts), v)
+        result = result or (ok and bool(terms))
+    return result

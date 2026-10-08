@@ -387,7 +387,7 @@ def to_csv(snap: dict) -> str:
     import csv
     import io
 
-    cols = ["category", "namespace", "name", "release", "install", "installed", "running_version", "latest", "latest_any", "status", "image", "ref"]
+    cols = ["category", "namespace", "name", "release", "install", "installed", "running_version", "latest", "latest_any", "status", "incompatible", "image", "ref"]
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(cols)

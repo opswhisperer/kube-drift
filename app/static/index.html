@@ -125,6 +125,8 @@ tr.detail dd.v{font-size:12px}
 .ver .to{color:var(--c);font-weight:650}
 .ver .arrow{color:var(--faint);margin:0 5px}
 .imgs-out{color:var(--minor)}
+.incompat{color:var(--major)}
+button#showinc[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 
 /* orphans */
 .o-orphan{--c:var(--minor);--bg-c:var(--minor-bg)} .o-in-use{--c:var(--ok);--bg-c:var(--ok-bg)}
@@ -225,6 +227,7 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
       <option value="tagstyle">Group by tag style</option>
     </select>
     <input type="search" id="q" placeholder="Search name, image or version" aria-label="search">
+    <button id="showinc" aria-pressed="false" title="Updates this cluster can't install, such as a chart that needs a newer Kubernetes" hidden></button>
     <span class="hint" id="count"></span>
   </div>
   <div class="tablewrap">
@@ -284,8 +287,8 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 <div class="toast" id="toast" hidden></div>
 <script>
 const $ = s => document.querySelector(s);
-const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', shut:new Set(), sort:'status', asc:true, open:new Set() };
-try{ state.group=localStorage.getItem('kd.group')||''; }catch{}
+const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', showInc:false, shut:new Set(), sort:'status', asc:true, open:new Set() };
+try{ state.group=localStorage.getItem('kd.group')||''; state.showInc=localStorage.getItem('kd.showinc')==='1'; }catch{}
 const ost = { data:null, view:'versions', tile:'', kind:'', ns:'', q:'', showIgn:false, sort:'status', asc:true, sel:new Set() };
 const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm image' };
 // Worst first: what you'd act on, then what kube-drift couldn't check, then what's fine.
@@ -323,6 +326,7 @@ function versionCell(c){
   if(c.category==='helm' && c.installed_app) sub.push(`app ${esc(c.installed_app)}${behind && c.latest_app && c.latest_app!==c.installed_app?' → '+esc(c.latest_app):''}`);
   if(c.floating && !c.running_version) sub.push(c.digest_current===true?'floating tag, running its current image':c.digest_current===false?'floating tag, a newer image is behind it':'floating tag');
   if(c.latest_any && c.latest_any!==c.latest) sub.push(`${esc(c.latest_any)} outside your track`);
+  if(c.incompatible) sub.push(`<span class="incompat">Not compatible: ${esc(c.incompatible)}</span>`);
   if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':(c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':'no comparable version found'));
   return h+(sub.filter(Boolean).length?subLine(sub):'');
 }
@@ -374,7 +378,11 @@ function render(){
   const d=state.data; if(!d) return;
   showCluster(d.cluster); showVersion(d.version);
   if(ost.view==='versions') setMeta(d,'scan','Scanning');
-  const all=d.components||[];
+  // An update the cluster can't install (c.incompatible says why) is hidden unless asked for.
+  const inc=(d.components||[]).filter(c=>c.incompatible).length;
+  const all=(d.components||[]).filter(c=>state.showInc||!c.incompatible);
+  const sib=$('#showinc'); sib.hidden=!inc; sib.setAttribute('aria-pressed',state.showInc);
+  sib.textContent=state.showInc?'Hide incompatible':`Show ${inc} incompatible`;
   const top=all.filter(c=>!c.release);
   const out=top.filter(c=>c.status==='outdated').length; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
   // Helm-managed containers are listed under their release (expand it), not on their own.
@@ -393,6 +401,7 @@ function render(){
       seg('error','lookup errors','--err'),seg('unknown','unknown','--unk-bar')],
     segs,
   });
+  if(inc && !state.showInc) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${inc} incompatible update${inc===1?'':'s'} hidden</span>`);
   if(imgRel) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${imgRel} more Helm release${imgRel===1?' ships':'s ship'} outdated images</span>`);
   // namespaces
   const nsSel=$('#ns'); const cur=nsSel.value; const nss=[...new Set(all.map(c=>c.namespace))].sort();
@@ -419,7 +428,7 @@ function render(){
       <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
-    const dl=[['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+    const dl=[['Not compatible',c.incompatible],['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
@@ -465,6 +474,7 @@ document.addEventListener('click',e=>{
 $('#ns').addEventListener('change',e=>{ state.ns=e.target.value; render(); });
 $('#group').value=state.group;
 $('#group').addEventListener('change',e=>{ state.group=e.target.value; state.shut.clear(); try{ localStorage.setItem('kd.group',state.group); }catch{} render(); });
+$('#showinc').addEventListener('click',()=>{ state.showInc=!state.showInc; try{ localStorage.setItem('kd.showinc',state.showInc?'1':''); }catch{} render(); refocus('#showinc'); });
 $('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
 $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+ost.view,{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
 

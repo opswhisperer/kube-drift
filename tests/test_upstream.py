@@ -166,5 +166,47 @@ class Labels(unittest.TestCase):
         self.assertEqual(upstream._labels, {"sha256:a": {"source": "s"}})
 
 
+class ChartMeta(unittest.TestCase):
+    """kubeVersion of a chart in an OCI registry, read from its config blob."""
+
+    def setUp(self):
+        upstream._labels.clear()
+        self.addCleanup(upstream._labels.clear)
+        self.calls = []
+
+    def fake(self, docs, status=None):
+        def call(host, repo, path, method="GET", accept=None):
+            self.calls.append(path)
+            if status:
+                raise HttpError(status, path)
+            r = mock.Mock()
+            r.json.return_value = docs[path]
+            return r
+        return call
+
+    def chart(self, kube_version):
+        return {"manifests/sha256:m": {"config": {"mediaType": "application/vnd.cncf.helm.config.v1+json", "digest": "sha256:c"}},
+                "blobs/sha256:c": {"name": "widget", "version": "2.0.0", "kubeVersion": kube_version}}
+
+    def test_reads_kube_version_and_caches_by_digest(self):
+        reg = Registry()
+        with mock.patch.object(reg, "_call", self.fake(self.chart(">=1.30.0-0"))):
+            self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {"kube_version": ">=1.30.0-0"})
+            self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {"kube_version": ">=1.30.0-0"})
+        self.assertEqual(self.calls, ["manifests/sha256:m", "blobs/sha256:c"])
+
+    def test_no_range_cached_unreadable_not(self):
+        reg = Registry()
+        with mock.patch.object(reg, "_call", self.fake(self.chart(None))):
+            self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {"kube_version": ""})
+        upstream._labels.clear()
+        with mock.patch.object(reg, "_call", self.fake({}, 429)):
+            self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {})
+        self.assertNotIn("sha256:m", upstream._labels)
+        image = {"manifests/sha256:m": {"config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:c"}}}
+        with mock.patch.object(reg, "_call", self.fake(image)):
+            self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

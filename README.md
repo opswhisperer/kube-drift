@@ -138,6 +138,11 @@ Pinned tags are matched by shape: `v1.35.9` only considers `vX.Y.Z` tags, `9.0-a
 answer to the installed minor/major and shows the unrestricted one as "newer track".
 Prereleases are ignored.
 
+A chart update whose `kubeVersion` excludes the control plane's version is marked incompatible,
+with the reason. The range comes from ArtifactHub, or for an OCI chart from the chart's metadata
+in its registry (a small config blob, cached by digest; the chart itself isn't pulled). The dashboard hides those rows until you press
+"Show N incompatible".
+
 Floating tags (`latest`, `main`, `nightly`…) carry no version, so the running image digest is
 compared with the registry's current digest for that tag ("newer image behind tag"). Apps that
 report their version over HTTP can be asked directly with `probes`.

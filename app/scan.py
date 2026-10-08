@@ -11,7 +11,7 @@ from typing import Optional
 
 from . import upstream
 from .http import HttpError, get_json
-from .versions import cmp_versions, is_floating, pick_latest
+from .versions import cmp_versions, is_floating, pick_latest, satisfies
 
 log = logging.getLogger("kube-drift.scan")
 
@@ -63,6 +63,7 @@ class Scanner:
         self.reg = upstream.Registry(config.get("registries"))
         self.labels_file = Path(data_dir) / "image-labels.json" if data_dir else None
         self.label_digests: set[str] = set()
+        self.kube_version = ""  # the control plane's, set by inventory()
 
     # ------------------------------------------------------------------ inventory
     def inventory(self) -> list[dict]:
@@ -80,6 +81,7 @@ class Scanner:
 
     def _cluster(self) -> list[dict]:
         v = self.k8s.version()
+        self.kube_version = v.get("gitVersion", "")
         return [{
             "id": "cluster/kubernetes", "category": "cluster", "install": "kubeadm",
             "name": "Kubernetes control plane", "namespace": "-",
@@ -244,6 +246,8 @@ class Scanner:
                 res = pick_latest(comp["installed"], tags, comp.get("track", "any"))
                 comp.update(latest=res["latest"], latest_any=res["latest_any"],
                             status="outdated" if res["outdated"] else ("current" if res["outdated"] is False else "unknown"))
+                if comp["status"] == "outdated":
+                    self._oci_chart_range(comp, host, repo, res["latest"])
             elif t == "registry":
                 self._resolve_registry(comp)
             elif t == "none":
@@ -274,6 +278,23 @@ class Scanner:
             comp["ref_ah"] = r["ref"]
             comp.setdefault("ref", r["ref"])
         comp["status"] = ("outdated" if cmp_versions(comp["installed"], r["version"]) < 0 else "current") if r.get("version") else "unknown"
+        if comp["status"] == "outdated":
+            self._kube_range(comp, r["version"], r.get("kube_version"))
+
+    def _kube_range(self, comp: dict, version: str, need: Optional[str]):
+        """Mark a chart update whose kubeVersion range excludes the cluster as incompatible."""
+        if need and satisfies(self.kube_version, need) is False:
+            comp["incompatible"] = f"chart {version} needs Kubernetes {need}; the cluster runs {self.kube_version}"
+
+    def _oci_chart_range(self, comp: dict, host: str, repo: str, tag: str):
+        try:
+            digest = self.reg.digest(host, repo, tag)  # a HEAD: free against Docker Hub's pull limit
+        except HttpError as e:
+            log.info("chart %s/%s:%s: HTTP %s", host, repo, tag, e.status)
+            return
+        if digest:
+            self.label_digests.add(digest)  # keeps its metadata in the saved digest cache
+            self._kube_range(comp, tag, self.reg.chart_meta(host, repo, digest).get("kube_version"))
 
     def _resolve_artifacthub(self, comp: dict, repo: str, chart: str):
         r = upstream.artifacthub_package(repo, chart)
