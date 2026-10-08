@@ -189,6 +189,7 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
   <div class="meta" id="meta" aria-live="polite">loading…</div>
   <div class="spacer"></div>
   <nav class="out" aria-label="downloads and API">
+    <a id="version" href="https://github.com/opswhisperer/kube-drift/releases" target="_blank" rel="noopener" title="kube-drift version" hidden></a>
     <a id="csv" href="/api/drift.csv">CSV</a>
     <a id="json" href="/api/drift" target="_blank">JSON</a>
     <a href="/docs">API docs</a>
@@ -346,6 +347,12 @@ function describeSource(c){
 }
 
 function showCluster(name){ if(!name) return; $('#cluster').textContent=name; document.title='kube-drift · '+name; }
+// kube-drift's own version; an exact release links to its release notes.
+function showVersion(v){
+  const a=$('#version'); if(!v || a.dataset.v===v) return;
+  a.dataset.v=v; a.textContent=v; a.hidden=false;
+  a.href='https://github.com/opswhisperer/kube-drift/releases'+(/^v\d+\.\d+\.\d+$/.test(v)?'/tag/'+encodeURIComponent(v):'');
+}
 function setMeta(d, noun, busy){
   $('#meta').innerHTML=(d.scanning?`<span class="scanning"></span>${busy}. `:'')+
     (d.scanned_at?`Last ${noun} ${rel(d.scanned_at)}`:(d.scanning?'':`No ${noun} yet`))+
@@ -365,7 +372,7 @@ function strip(el, {headline, headOn, headKey, parts, segs, active, attr}){
 
 function render(){
   const d=state.data; if(!d) return;
-  showCluster(d.cluster);
+  showCluster(d.cluster); showVersion(d.version);
   if(ost.view==='versions') setMeta(d,'scan','Scanning');
   const all=d.components||[];
   const top=all.filter(c=>!c.release);

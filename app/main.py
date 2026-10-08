@@ -40,6 +40,7 @@ STATIC = HERE / "static"
 STATE_FILE = Path(os.environ.get("STATE_FILE", "/tmp/drift.json"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CLUSTER = {"name": os.environ.get("CLUSTER_NAME", "")}  # set from config in main()
+VERSION = os.environ.get("KUBE_DRIFT_VERSION") or "dev"  # baked into the image at build time (Dockerfile)
 MAX_BODY = 1 << 20
 # Swagger UI for /docs: bundled into the image (Dockerfile); from source, the same version on a CDN.
 SWAGGER_UI_VERSION = "5.33.1"
@@ -86,7 +87,7 @@ class State:
             return {
                 "scanning": self.scanning, "last_error": self.last_error,
                 "next_scan_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(self.next_scan)) if self.next_scan else None,
-                "generated_at": now_iso(), "cluster": CLUSTER["name"],
+                "generated_at": now_iso(), "cluster": CLUSTER["name"], "version": VERSION,
                 **(self.result or {"scanned_at": None, "summary": {}, "components": []}),
             }
 
@@ -144,7 +145,7 @@ class OrphanState:
             summary["ignored" if i.get("ignored") else i["status"]] += 1
         summary["total"] = len(items) - summary["ignored"]
         return {**res, **meta, "items": items, "rules": rules, "summary": summary, "kubectl_context": self.context,
-                "cluster": CLUSTER["name"],
+                "cluster": CLUSTER["name"], "version": VERSION,
                 "ignore_enabled": self.store.writable,
                 "stale_ignores": sorted(set(ignored) - {i["id"] for i in items}),
                 "generated_at": now_iso()}
@@ -222,7 +223,7 @@ def _parse_ts(iso: str | None) -> float:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "kube-drift/1.0"
+    server_version = f"kube-drift/{VERSION}"
 
     def log_message(self, fmt, *args):  # quieter access log
         if self.path not in ("/healthz", "/readyz"):
@@ -407,7 +408,7 @@ def main():
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     log.warning("kube-drift has no authentication: expose it only through a gateway that "
                 "authenticates every request (README: 'Exposing it')")
-    log.info("listening on :%d", port)
+    log.info("kube-drift %s listening on :%d", VERSION, port)
     srv.serve_forever()
 
 

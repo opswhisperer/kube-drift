@@ -165,6 +165,8 @@ SPEC: dict = {
         "Ok": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
         "ScanState": {"type": "object", "properties": {
             "cluster": {"type": "string", "description": "Cluster name from the config."},
+            "version": {"type": "string", "description": "kube-drift's own version: the release tag or `git describe` "
+                        "it was built from; `dev` when run from source."},
             "scanning": {"type": "boolean", "description": "A scan is running now."},
             "scanned_at": {"type": ["string", "null"], "format": "date-time", "description": "When the data was produced; null before the first scan."},
             "duration_s": {"type": "number"},

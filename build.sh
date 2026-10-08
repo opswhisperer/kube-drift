@@ -14,6 +14,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 docker buildx build \
   --platform "$PLATFORMS" \
   --push \
+  --build-arg VERSION="$TAG" \
   -t "${IMAGE}:${TAG}" \
   -t "${IMAGE}:latest" \
   .
