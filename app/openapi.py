@@ -259,6 +259,7 @@ SPEC: dict = {
             "until": {"type": ["string", "null"], "format": "date-time"},
             "kube_version": {"type": ["string", "null"], "description": "Ends when the cluster no longer runs this version."},
             "until_newer": {"type": "boolean", "description": "Ends when something newer than `latest` is available."},
+            "via": {"type": "string", "description": "Helm-managed workload: ignored because its release (this id) is."},
             "note": {"type": "string"}, "at": {"type": "string", "format": "date-time"},
         }},
         "OrphanScan": {"allOf": [{"$ref": "#/components/schemas/ScanState"}, {"type": "object", "properties": {

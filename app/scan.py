@@ -456,17 +456,24 @@ def ignore_ended(ig: dict, comp: dict, kube: str, now: datetime) -> Optional[str
 
 def apply_ignores(result: dict, ignores: dict, now: Optional[datetime] = None) -> tuple[dict, set[str]]:
     """The scan with ignored updates marked (`ignored` on the component) and moved out of the
-    summary's status counts into `ignored`. Also returns the ids whose ignore has ended."""
+    summary's status counts into `ignored`. Ignoring a Helm release ignores the images it ships
+    too (`ignored.via` names the release). Also returns the ids whose ignore has ended."""
     now = now or datetime.now(timezone.utc)
     comps = result.get("components") or []
     kube = kube_version(comps)
     ended: set[str] = set()
-    out, summary = [], dict(result.get("summary") or {})
+    active = {}
     for c in comps:
         ig = ignores.get(c["id"])
         if ig and ignore_ended(ig, c, kube, now):
             ended.add(c["id"])
-            ig = None
+        elif ig:
+            active[c["id"]] = ig
+    out, summary = [], dict(result.get("summary") or {})
+    for c in comps:
+        ig = active.get(c["id"])
+        if not ig and c.get("release") in active:
+            ig = {**active[c["release"]], "via": c["release"]}
         if ig:
             c = {**c, "ignored": ig}
             if not c.get("release"):

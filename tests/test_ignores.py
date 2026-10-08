@@ -44,6 +44,14 @@ class ApplyIgnores(unittest.TestCase):
         self.assertEqual(ended, set())
         self.assertEqual(res["summary"], {"total": 2, "outdated": 1, "current": 1, "ignored": 1})
 
+    def test_release_ignore_covers_its_images(self):
+        _, _, res = self.ignored({"until": "2026-11-01T00:00:00+00:00", "note": "n"})
+        mgr = next(c for c in res["components"] if c["id"] == "workload/longhorn-system/manager/longhorn-manager")
+        self.assertEqual(mgr["ignored"], {"until": "2026-11-01T00:00:00+00:00", "note": "n", "via": "helm/longhorn-system/longhorn"})
+        self.assertEqual(res["summary"]["outdated"], 1)  # images count through their release, so only once
+        _, _, res = self.ignored({"until": "2026-10-01T00:00:00+00:00"})
+        self.assertNotIn("ignored", next(c for c in res["components"] if c["id"] == "workload/longhorn-system/manager/longhorn-manager"))
+
     def test_ends_at_date(self):
         ig, ended, res = self.ignored({"until": "2026-10-01T00:00:00+00:00"})
         self.assertIsNone(ig)

@@ -337,6 +337,7 @@ function versionCell(c){
 }
 // "Ignored until Oct 20 or until something newer than 1.12.4 is out — note": an ignore ends at its first condition met.
 function ignoreText(ig){
+  if(ig.via) return 'Ignored with its Helm release';
   const until=[ig.until&&'until '+new Date(ig.until).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}),
     ig.kube_version&&`until Kubernetes moves off ${ig.kube_version}`, ig.until_newer&&`until something newer than ${ig.latest||'this image'} is out`].filter(Boolean);
   return 'Ignored '+until.join(' or ')+(ig.note?' — '+ig.note:'');
