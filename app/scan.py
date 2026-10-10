@@ -43,6 +43,12 @@ def _lookup(table: dict, *keys: str) -> dict:
     return {}
 
 
+def _image_key(ref: str) -> str:
+    """'x/y' and 'docker.io/x/y:latest@sha256:…' -> 'docker.io/x/y:latest' (digest dropped)."""
+    host, repo, tag, _ = upstream.split_image(ref)
+    return f"{host}/{repo}:{tag}"
+
+
 def _jsonpath(obj, path: str):
     for part in path.split("."):
         if isinstance(obj, list):
@@ -140,13 +146,15 @@ class Scanner:
         images_cfg = self.cfg.get("images", {})
         grouped: dict[str, dict] = {}
 
-        # Running image digests from pods, keyed by image ref -> set(digest)
+        # Running image digests from pods, keyed by normalized image ref -> set(digest). The
+        # runtime reports Docker Hub images fully qualified ("docker.io/x/y:latest") while the
+        # workload spec may say "x/y" or "x/y:latest", so both sides go through _image_key.
         digests: dict[str, set[str]] = {}
         for p in self.k8s.pods():
             for cs in p.get("status", {}).get("containerStatuses", []) or []:
                 iid = cs.get("imageID", "")
                 if "@" in iid:
-                    digests.setdefault(cs.get("image", ""), set()).add(iid.split("@", 1)[1])
+                    digests.setdefault(_image_key(cs.get("image", "")), set()).add(iid.split("@", 1)[1])
 
         def add_image(ns: str, name: str, kind: str, image: str, helm_release: Optional[str], note: str = "",
                       release_ns: Optional[str] = None):
@@ -160,7 +168,7 @@ class Scanner:
                 "name": icfg.get("name") or name, "namespace": ns, "kind": kind,
                 "image": image, "image_host": host, "image_repo": repo, "tag": tag,
                 "installed": tag, "pinned_digest": pinned_digest,
-                "running_digests": sorted(digests.get(image, [])),
+                "running_digests": sorted(digests.get(_image_key(image), [])),
                 "floating": is_floating(tag), "track": icfg.get("track", "any"),
                 "loose_suffix": icfg.get("loose_suffix", host in self.cfg.get("registries", {})),
                 "source": icfg.get("source") or {"type": "registry"},

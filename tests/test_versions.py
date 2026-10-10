@@ -161,5 +161,33 @@ class HelmNesting(unittest.TestCase):
         self.assertNotIn("release", comps["workload/ai/litellm/litellm"])
 
 
+class RunningDigests(unittest.TestCase):
+    """The runtime reports Docker Hub images fully qualified; the spec may use the short form."""
+
+    def test_short_docker_hub_ref_finds_its_running_digest(self):
+        class K(FakeK8s):
+            def workloads(self):
+                ws = super().workloads()
+                for name, image in (("hubapp", "example/hubapp"), ("hubtool", "example/hubtool:latest")):
+                    ws.append({"kind": "Deployment", "metadata": {"namespace": "apps", "name": name, "annotations": {}},
+                               "spec": {"template": {"spec": {"containers": [{"name": "c", "image": image}]}}}})
+                return ws
+
+            def pods(self, namespace=None):
+                pods = super().pods(namespace)
+                for name, dig in (("hubapp", "sha256:aaa"), ("hubtool", "sha256:bbb")):
+                    full = f"docker.io/example/{name}"
+                    pods.append({"metadata": {"name": name, "namespace": "apps", "ownerReferences": [{"kind": "ReplicaSet"}]},
+                                 "spec": {"containers": [{"name": "c", "image": full + ":latest"}]},
+                                 "status": {"containerStatuses": [{"image": full + ":latest", "imageID": f"{full}@{dig}"}]}})
+                return pods
+
+        sc = Scanner(K(), {})
+        sc.resolve = lambda c: c
+        comps = {c["id"]: c for c in sc.run()["components"]}
+        self.assertEqual(comps["workload/apps/hubapp/hubapp"]["running_digests"], ["sha256:aaa"])
+        self.assertEqual(comps["workload/apps/hubtool/hubtool"]["running_digests"], ["sha256:bbb"])
+
+
 if __name__ == "__main__":
     unittest.main()
