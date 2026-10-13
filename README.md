@@ -16,8 +16,14 @@ Cleanup is a kubectl script it writes for you to review and run.
 > inventory and change its ignore list. Never expose it directly: use `kubectl port-forward`, or
 > put it behind a gateway that authenticates every request. See [Exposing it](#exposing-it).
 
-![Version drift](docs/versions.png)
-![Orphaned resources](docs/orphans.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/versions-dark.png">
+  <img alt="Version drift: every component against its latest upstream release" src="docs/versions.png">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/orphans-dark.png">
+  <img alt="Orphaned resources found by kor, with why each is flagged" src="docs/orphans.png">
+</picture>
 
 ## Quick start
 
