@@ -315,7 +315,7 @@ function updateSize(c){
   if(c.status!=='outdated') return '';
   const num=v=>{ const m=/\d+(?:\.\d+)*/.exec(v||''); return m?m[0].split('.').map(Number):null; };
   const a=num(c.running_version||c.installed), b=num(c.latest);
-  if(!a||!b) return 'other';
+  if(!a||!b||a[0]>99999||b[0]>99999) return 'other';  // a build stamp (20261008-0811) has no major/minor
   return ['major','minor','patch'].find((_,i)=>(a[i]||0)!==(b[i]||0))||'other';
 }
 const sev = c => updateSize(c) || (c.status in SEV ? c.status : 'unknown');
@@ -332,7 +332,8 @@ function versionCell(c){
   if(c.latest_any && c.latest_any!==c.latest) sub.push(`${esc(c.latest_any)} outside your track`);
   if(c.incompatible) sub.push(`<span class="incompat">Not compatible: ${esc(c.incompatible)}</span>`);
   if(c.ignored) sub.push(`<span class="ignored-note">${esc(ignoreText(c.ignored))}</span>`);
-  if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':(c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':'no comparable version found'));
+  if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':
+    c.digest_error?`registry said ${esc(c.digest_error)}`:c.digest_current===true?'image matches its tag, no comparable version found':'no comparable version found');
   return h+(sub.filter(Boolean).length?subLine(sub):'');
 }
 // "Ignored until Oct 20 or until something newer than 1.12.4 is out — note": an ignore ends at its first condition met.

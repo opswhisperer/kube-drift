@@ -59,6 +59,53 @@ class ExpiredToken(unittest.TestCase):
         self.assertEqual(cm.exception.status, 400)
 
 
+class Credentials(unittest.TestCase):
+    """Docker Hub won't take Basic auth on the registry: the credentials buy a bearer token."""
+
+    HUB = {"www-authenticate": 'Bearer realm="https://auth.docker.io/token",service="registry.docker.io"'}
+
+    def setUp(self):
+        upstream._tokens.clear()
+        self.addCleanup(upstream._tokens.clear)
+        self.token_auth = []
+
+    def hub(self, url, method="GET", headers=None, insecure=False):
+        if (headers or {}).get("Authorization") == "Bearer private":
+            return Resp(["1.0.0"])
+        raise HttpError(401, url, self.HUB)
+
+    def get_json(self, url, headers=None):
+        self.token_auth.append((headers or {}).get("Authorization"))
+        return {"token": "private" if headers else "anonymous"}
+
+    def call(self, host, cfg, env):
+        with mock.patch.object(upstream, "request", self.hub), mock.patch.object(upstream, "get_json", self.get_json), \
+             mock.patch.dict("os.environ", env):
+            return Registry(cfg)._call(host, "acme/private", "tags/list").json()["tags"]
+
+    def test_basic_credentials_traded_for_token(self):
+        cfg = {"docker.io": {"auth_env": "HUB_AUTH"}}
+        self.assertEqual(self.call("docker.io", cfg, {"HUB_AUTH": "me:pat"}), ["1.0.0"])
+        self.assertEqual(self.token_auth, ["Basic bWU6cGF0"])
+        self.assertEqual(upstream._tokens["registry-1.docker.io/acme/private"], "private")
+
+    def test_hub_mirror_borrows_docker_io_credentials(self):
+        cfg = {"docker.io": {"auth_env": "HUB_AUTH"}}
+        self.assertEqual(self.call("docker.n8n.io", cfg, {"HUB_AUTH": "me:pat"}), ["1.0.0"])
+        self.assertEqual(self.token_auth, ["Basic bWU6cGF0"])
+
+    def test_other_realms_never_get_docker_io_credentials(self):
+        cfg = {"docker.io": {"auth_env": "HUB_AUTH"}}
+        with mock.patch.object(upstream, "get_json", self.get_json), mock.patch.dict("os.environ", {"HUB_AUTH": "me:pat"}):
+            Registry(cfg)._token(CHALLENGE["www-authenticate"], "a/b")
+        self.assertEqual(self.token_auth, [None])
+
+    def test_anonymous_without_credentials(self):
+        with self.assertRaises(HttpError):
+            self.call("docker.io", {}, {})
+        self.assertEqual(self.token_auth, [None])
+
+
 class ReferenceUrl(unittest.TestCase):
     def test_ghcr_links_the_package_not_a_guessed_repo(self):
         self.assertEqual(reference_url("ghcr.io", "immich-app/immich-server"), "https://ghcr.io/immich-app/immich-server")

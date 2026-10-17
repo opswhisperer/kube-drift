@@ -4,7 +4,8 @@ from unittest import mock
 from app.scan import Scanner
 from tests.fake_k8s import FakeK8s
 from app.upstream import split_image
-from app.versions import cmp_versions, is_floating, pick_latest, satisfies
+from app.http import HttpError
+from app.versions import cmp_versions, is_floating, pick_latest, satisfies, walk_up
 
 
 class SplitImage(unittest.TestCase):
@@ -46,6 +47,69 @@ class Versions(unittest.TestCase):
     def test_loose_suffix_first_party(self):
         tags = ["0.0.161-589c824437-r1", "0.0.162-aaaaaaaaaa-r1", "0.0.162-aaaaaaaaaa-rc1"]
         self.assertEqual(pick_latest("0.0.161-589c824437-r1", tags, loose_suffix=True)["latest"], "0.0.162-aaaaaaaaaa-r1")
+
+    def test_date_stamps(self):
+        # one huge number to the semver rules: compared as date + time instead
+        self.assertFalse(is_floating("20261008"))
+        tags = ["20261008-0811", "20261015-0930", "20261015-0930-arm64", "20261009", "20261014-2359", "latest"]
+        self.assertEqual(pick_latest("20261008-0811", tags), {"latest": "20261015-0930", "latest_any": "20261015-0930", "outdated": True})
+        self.assertEqual(pick_latest("20261008-0811", ["20261008-0811"])["outdated"], False)
+        self.assertEqual(pick_latest("app-20261008", ["app-20261008", "app-20261102", "app-20261103-rc"])["latest"], "app-20261102")
+        # a date after the version is just a suffix
+        self.assertEqual(pick_latest("v1.2.3-20261008", ["v1.2.3-20261008", "v1.2.4-20261008"])["latest"], "v1.2.4-20261008")
+
+    def test_walk_up(self):
+        tags = {"v3.32.2", "v3.33.0", "v3.33.1", "v3.34.0"}
+        self.assertEqual(walk_up("v3.32.1", tags.__contains__), {"latest": "v3.34.0", "latest_any": "v3.34.0", "outdated": True})
+        self.assertEqual(walk_up("v3.32.1", tags.__contains__, "minor")["latest"], "v3.32.2")
+        self.assertEqual(walk_up("v3.34.0", tags.__contains__)["outdated"], False)
+        self.assertEqual(walk_up("8", {"9", "10"}.__contains__, "major"), {"latest": "8", "latest_any": "10", "outdated": False})
+        asked = []
+        walk_up("v1.0.0", lambda t: asked.append(t) or True, limit=5)
+        self.assertEqual(len(asked), 5)
+        self.assertIsNone(walk_up("20261008-0811", tags.__contains__)["outdated"])
+
+
+class WalkUpFallback(unittest.TestCase):
+    """A registry that lists only build tags newest-first still gets an answer for v3.32.1."""
+
+    def resolve(self, existing, tags=("v3.32.2-156-g6c1d95ab4e11", "release-v3.32")):
+        sc = Scanner(FakeK8s(), {})
+        sc.reg = mock.Mock()
+        sc.reg.tags.return_value = tags
+        def digest(host, repo, tag):
+            if tag in existing:
+                return "sha256:" + tag
+            raise HttpError(404, tag)
+        sc.reg.digest.side_effect = digest
+        comp = {"image": "quay.io/acme/widget:v3.32.1", "image_host": "quay.io", "image_repo": "acme/widget",
+                "tag": "v3.32.1", "floating": False, "running_digests": ["sha256:v3.32.1"], "ref_overridden": True}
+        sc._resolve_registry(comp)
+        return comp
+
+    def test_finds_newer(self):
+        comp = self.resolve({"v3.32.1", "v3.32.2", "v3.33.0"})
+        self.assertEqual((comp["status"], comp["latest"]), ("outdated", "v3.33.0"))
+
+    def test_nothing_newer(self):
+        self.assertEqual(self.resolve({"v3.32.1"})["status"], "current")
+
+    def test_registry_trouble_leaves_it_unknown(self):
+        with mock.patch.object(Scanner, "_tag_exists", side_effect=HttpError(429, "x")):
+            self.assertEqual(self.resolve({"v3.32.1"})["status"], "unknown")
+
+
+class OwnRegistry(unittest.TestCase):
+    def test_credentials_for_a_public_registry_keep_exact_suffixes(self):
+        cfg = {"registries": {"docker.io": {"auth_env": "HUB_AUTH"}, "reg.example:5000": {"insecure": True}}}
+        k8s = FakeK8s()
+        ws = k8s.workloads()
+        ws.append({"kind": "Deployment", "metadata": {"namespace": "apps", "name": "built-here"},
+                   "spec": {"template": {"spec": {"containers": [{"name": "a", "image": "reg.example:5000/app:1.0.0-abc"}]}}}})
+        k8s.workloads = lambda: ws
+        comps = {c["image"]: c for c in Scanner(k8s, cfg).inventory() if c.get("image_host")}
+        self.assertFalse(comps["nginx:1.27-alpine"]["loose_suffix"])
+        self.assertTrue(comps["reg.example:5000/app:1.0.0-abc"]["loose_suffix"])
 
 
 class KubeVersionRange(unittest.TestCase):

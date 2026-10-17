@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 # Tags that are moving pointers, not versions.
 FLOATING = {
@@ -13,39 +13,55 @@ FLOATING = {
 PRERELEASE_RE = re.compile(r"(rc|alpha|beta|dev|nightly|pre|preview|canary|snapshot|test|unstable)", re.I)
 CORE_RE = re.compile(r"(\d+(?:\.\d+)*)")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+# A build stamp: YYYYMMDD, optionally followed by a time (20261008-0811, 20261008T081130).
+DATE_RE = re.compile(r"((?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))(?:([-_.T])(\d{4,6}))?(?!\d)")
 
 
 @dataclass(frozen=True)
 class Template:
-    """The non-numeric shape of a tag: `prefix` + <numbers> + `suffix`."""
+    """The non-numeric shape of a tag: `prefix` + <numbers> + `suffix`.
+
+    A `date` template's numbers are a build stamp (date, then time) rather than a version.
+    """
 
     prefix: str
     suffix: str
     parts: int
+    date: bool = False
 
     def match(self, tag: str, loose_suffix: bool = False) -> Optional[tuple[int, ...]]:
         if not tag.startswith(self.prefix):
             return None
         rest = tag[len(self.prefix):]
-        m = CORE_RE.match(rest)
-        if not m:
-            return None
-        core = m.group(1)
+        if self.date:
+            m = DATE_RE.match(rest)
+            if not m:
+                return None
+            nums = tuple(int(p) for p in (m.group(1), m.group(3)) if p)
+        else:
+            m = CORE_RE.match(rest)
+            if not m:
+                return None
+            nums = tuple(int(p) for p in m.group(1).split("."))
         suffix = rest[m.end():]
         if not loose_suffix and suffix != self.suffix:
             return None
         if loose_suffix and PRERELEASE_RE.search(suffix):
             return None
-        return tuple(int(p) for p in core.split("."))
+        return nums
 
 
 def parse_tag(tag: str) -> Optional[tuple[Template, tuple[int, ...]]]:
     """Split a tag into its template and numeric core. None for floating / sha tags."""
-    if tag in FLOATING or SHA_RE.match(tag):
+    if tag in FLOATING or SHA_RE.match(tag) and not DATE_RE.fullmatch(tag):
         return None
     m = CORE_RE.search(tag)
     if not m:
         return None
+    d = DATE_RE.match(tag, m.start())
+    if d:  # the version is a build stamp: compare it as date + time, not as one huge number
+        nums = tuple(int(p) for p in (d.group(1), d.group(3)) if p)
+        return Template(tag[: d.start()], tag[d.end():], len(nums), date=True), nums
     prefix, suffix = tag[: m.start()], tag[m.end():]
     nums = tuple(int(p) for p in m.group(1).split("."))
     return Template(prefix, suffix, len(nums)), nums
@@ -99,7 +115,7 @@ def pick_latest(installed_tag: str, candidates: Iterable[str], track: str = "any
             continue
         # A candidate must be at least as precise as the installed tag (so '12.4.2' never
         # matches a bare build number like '9799770991'), and no part may be absurdly large.
-        if len(nums) < len(cur) or any(n > 99999 for n in nums):
+        if len(nums) < len(cur) or not tpl.date and any(n > 99999 for n in nums):
             continue
         key = nums[: len(cur)] + (0,) * max(0, len(cur) - len(nums))
         if best_any is None or key > best_any:
@@ -113,12 +129,51 @@ def pick_latest(installed_tag: str, candidates: Iterable[str], track: str = "any
             best_track, tag_track = key, tag
     if best_track is None:
         return {"latest": None, "latest_any": None, "outdated": None}
-    if loose_suffix:  # the suffix varies per build, so show the real tag
+    if loose_suffix or tpl.date:  # the suffix varies per build, or the stamp is zero-padded: show the real tag
         latest, latest_any = tag_track, tag_any
     else:
         latest = render(tpl, best_track)
         latest_any = render(tpl, best_any) if best_any else None
     return {"latest": latest, "latest_any": latest_any, "outdated": best_track > cur}
+
+
+def walk_up(installed_tag: str, exists: Callable[[str], bool], track: str = "any", limit: int = 20) -> dict:
+    """Find newer tags by asking whether the next ones exist, for when a registry lists too
+    many tags to read them all (Quay and Docker Hub list build tags newest-first, and a busy
+    repo's release tags fall off the end).
+
+    From the installed version, try the next major, then minor, then patch (v4.0.0, v3.33.0,
+    v3.32.2), move to the first that exists and repeat. A release that skipped its .0 is
+    missed. Asks `exists` at most `limit` times; same result shape as pick_latest.
+    """
+    none = {"latest": None, "latest_any": None, "outdated": None}
+    parsed = parse_tag(installed_tag)
+    if not parsed or parsed[0].date or parsed[0].parts > 3:
+        return none
+    tpl, cur = parsed
+    seen: dict[str, bool] = {}
+
+    def has(nums: tuple[int, ...]) -> bool:
+        tag = render(tpl, nums)
+        if tag not in seen:
+            if len(seen) >= limit:
+                return False
+            seen[tag] = exists(tag)
+        return seen[tag]
+
+    def climb(level: int) -> tuple[int, ...]:
+        best = cur
+        while True:
+            nxt = next((b for i in range(level, len(best))
+                        if has(b := best[:i] + (best[i] + 1,) + (0,) * (len(best) - i - 1))), None)
+            if nxt is None:
+                return best
+            best = nxt
+
+    best_any = climb(0)
+    level = {"major": 1, "minor": 2}.get(track, 0)
+    best_track = best_any if level == 0 else climb(level) if level < len(cur) else cur
+    return {"latest": render(tpl, best_track), "latest_any": render(tpl, best_any), "outdated": best_track > cur}
 
 
 _TERM_RE = re.compile(r"^(>=|<=|=<|!=|~>|=|<|>|~|\^)?v?(\d+|[xX*])(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?(?:[-+]\S*)?$")

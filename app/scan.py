@@ -11,7 +11,7 @@ from typing import Optional
 
 from . import upstream
 from .http import HttpError, get_json
-from .versions import cmp_versions, is_floating, pick_latest, satisfies
+from .versions import cmp_versions, is_floating, pick_latest, satisfies, walk_up
 
 log = logging.getLogger("kube-drift.scan")
 
@@ -161,6 +161,7 @@ class Scanner:
             host, repo, tag, pinned_digest = upstream.split_image(image)
             key = f"{host}/{repo}" if host != "docker.io" else repo.removeprefix("library/")
             icfg = _lookup(images_cfg, f"{host}/{repo}", key, repo)
+            own_registry = host in self.cfg.get("registries", {}) and host not in upstream.PUBLIC_REGISTRIES
             comp = {
                 "id": f"workload/{ns}/{name}/{repo.split('/')[-1]}",
                 "category": "helm-workload" if helm_release else "manifest",
@@ -170,10 +171,10 @@ class Scanner:
                 "installed": tag, "pinned_digest": pinned_digest,
                 "running_digests": sorted(digests.get(_image_key(image), [])),
                 "floating": is_floating(tag), "track": icfg.get("track", "any"),
-                "loose_suffix": icfg.get("loose_suffix", host in self.cfg.get("registries", {})),
+                "loose_suffix": icfg.get("loose_suffix", own_registry),
                 "source": icfg.get("source") or {"type": "registry"},
                 "ref": icfg.get("ref") or upstream.reference_url(host, repo), "ref_overridden": bool(icfg.get("ref")),
-                "note": icfg.get("note") or note, "first_party": host in self.cfg.get("registries", {}),
+                "note": icfg.get("note") or note, "first_party": own_registry,
             }
             if helm_release:
                 comp["release"] = f"helm/{release_ns or ns}/{helm_release}"
@@ -356,6 +357,14 @@ class Scanner:
         else:
             comp["status"] = "unknown"
 
+    def _tag_exists(self, host: str, repo: str, tag: str) -> bool:
+        try:
+            return self.reg.digest(host, repo, tag) is not None
+        except HttpError as e:
+            if e.status == 404:
+                return False
+            raise
+
     def _resolve_registry(self, comp: dict):
         host, repo = comp["image_host"], comp["image_repo"]
         tag = comp["tag"]
@@ -375,6 +384,12 @@ class Scanner:
         if not comp["floating"]:
             tags = self.reg.tags(host, repo)
             res = pick_latest(tag, tags, comp.get("track", "any"), comp.get("loose_suffix", False))
+            if res["outdated"] is None and remote and not comp.get("loose_suffix"):
+                # The listing may have been cut short before any tag of this shape: ask for the next ones.
+                try:
+                    res = walk_up(tag, lambda t: self._tag_exists(host, repo, t), comp.get("track", "any"))
+                except HttpError as e:
+                    log.info("walking up from %s: %s", comp["image"], e)
             comp["latest"], comp["latest_any"] = res["latest"], res["latest_any"]
             if res["outdated"] is None:
                 comp["status"] = "unknown"

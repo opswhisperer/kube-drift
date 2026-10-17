@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import threading
+import urllib.parse
 from typing import Optional
 
 from .http import HttpError, get_json, request
@@ -27,6 +28,14 @@ HOST_ALIASES = {
     "index.docker.io": "registry-1.docker.io",
     "lscr.io": "ghcr.io",          # linuxserver's lscr.io fronts ghcr.io/linuxserver/*
     "docker.n8n.io": "docker.n8n.io",
+}
+
+DOCKER_HUB_AUTH = "auth.docker.io"
+# Public registries: credentials under `registries` for one of these (to lift a rate limit or
+# reach a private repo) don't make its images your own builds.
+PUBLIC_REGISTRIES = {
+    "docker.io", "index.docker.io", "docker.n8n.io", "ghcr.io", "lscr.io", "quay.io",
+    "registry.k8s.io", "public.ecr.aws", "gcr.io", "mcr.microsoft.com",
 }
 
 _token_lock = threading.Lock()
@@ -144,11 +153,11 @@ class Registry:
         key = f"{real}/{repo}"
         insecure = self.cfg.get(host, {}).get("insecure", False)
         basic = self._basic(host)
-        cached = None if basic else _tokens.get(key)
-        if basic:
-            headers["Authorization"] = f"Basic {basic}"
-        elif cached:
+        cached = _tokens.get(key)
+        if cached:
             headers["Authorization"] = f"Bearer {cached}"
+        elif basic:
+            headers["Authorization"] = f"Basic {basic}"
         try:
             return request(url, method=method, headers=headers, insecure=insecure)
         except HttpError as e:
@@ -159,10 +168,12 @@ class Registry:
                     if _tokens.get(key) == cached:
                         del _tokens[key]
                 return self._call(host, repo, path, method, accept, _retry=False)
-            if e.status != 401 or basic:
+            if e.status != 401:
                 raise
+            # Registries that take Basic auth are done; the rest (Docker Hub, GHCR, Quay) want the
+            # credentials traded for a bearer token at the realm their challenge names.
             challenge = e.headers.get("www-authenticate", "")
-            token = self._token(challenge, repo)
+            token = self._token(challenge, repo, basic)
             if not token:
                 raise
             with _token_lock:
@@ -170,15 +181,18 @@ class Registry:
             headers["Authorization"] = f"Bearer {token}"
             return request(url, method=method, headers=headers, insecure=insecure)
 
-    @staticmethod
-    def _token(challenge: str, repo: str) -> Optional[str]:
+    def _token(self, challenge: str, repo: str, basic: Optional[str] = None) -> Optional[str]:
         m = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
         realm = m.get("realm")
         if not realm or not challenge.lower().startswith("bearer"):
             return None
+        if not basic and urllib.parse.urlsplit(realm).hostname == DOCKER_HUB_AUTH:
+            # A Docker Hub mirror (docker.n8n.io) hands out Docker Hub tokens: docker.io's
+            # credentials get the same higher rate limit and private repos there.
+            basic = self._basic("docker.io")
         q = {"service": m.get("service", ""), "scope": m.get("scope") or f"repository:{repo}:pull"}
         url = realm + ("&" if "?" in realm else "?") + "&".join(f"{k}={v}" for k, v in q.items() if v)
-        data = get_json(url)
+        data = get_json(url, headers={"Authorization": f"Basic {basic}"} if basic else None)
         return data.get("token") or data.get("access_token")
 
     @functools.lru_cache(maxsize=512)
@@ -189,7 +203,12 @@ class Registry:
         thousands of sha tags, so Hub uses its own API sorted by last_updated instead.
         """
         if host == "docker.io":
-            return self._hub_tags(repo)
+            try:
+                return self._hub_tags(repo)
+            except HttpError:
+                if not self._basic(host):
+                    raise
+                # private repo: Hub's API doesn't know our credentials, the registry does
         if host == "quay.io":
             try:
                 return self._quay_tags(repo)

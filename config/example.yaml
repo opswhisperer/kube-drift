@@ -66,7 +66,8 @@ helm:
 #            else its registry page on Docker Hub, GHCR, Quay, ECR Public, registry.k8s.io, lscr.io
 #   note:    text shown under the name
 #   loose_suffix: true if every build gets a new suffix (1.4.2-a1b2c3-r1), so tags are compared
-#            by their version part only. On by default for images from `registries` below.
+#            by their version part only. On by default for images from your own `registries` below
+#            (not public ones listed there for credentials, such as docker.io).
 images:
   # mongo:                      { track: major }                   # stay on 8.x
   # registry.k8s.io/kube-proxy: { track: minor, ref: https://kubernetes.io/releases/ }
@@ -118,8 +119,13 @@ groups:
 #                    patch in your overlay:
 #                      - name: LOCAL_REGISTRY_AUTH
 #                        valueFrom: { secretKeyRef: { name: kube-drift-credentials, key: registry-auth } }
+# Symptom: a Docker Hub image shows "registry said HTTP 401" (a private repo) or "HTTP 429"
+#          (the anonymous rate limit).
+# Fix:     give docker.io an auth_env with your Docker Hub user and an access token. Mirrors that
+#          hand out Docker Hub tokens (docker.n8n.io) use it too.
 registries:
   # "registry.local:5000": { insecure: true, auth_env: LOCAL_REGISTRY_AUTH }
+  # docker.io: { auth_env: DOCKERHUB_AUTH }
 
 # ── runtimes, static pods ────────────────────────────────────────────────────────────────
 # Where node container-runtime versions come from. Default: GitHub releases of containerd.
