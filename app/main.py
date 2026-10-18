@@ -54,7 +54,7 @@ SWAGGER_DIR = STATIC / "swagger-ui"
 SWAGGER_ASSETS = {"swagger-ui-bundle.js": "application/javascript", "swagger-ui.css": "text/css"}
 API_LINKS = '</openapi.json>; rel="service-desc", </docs>; rel="service-doc"'  # RFC 8631
 AUTH: auth.Auth | None = None  # set from config in main(); None = no built-in auth (gateway does it)
-OPEN = {"/healthz", "/readyz", "/openapi.json", "/docs"}  # reachable without signing in
+OPEN = {"/healthz", "/readyz", "/openapi.json", "/docs", "/icon.svg"}  # reachable without signing in
 PAGES = {"/", "/index.html"}  # signed-out people are sent to sign in; API callers get 401
 
 
@@ -378,6 +378,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(SPEC).encode())
         elif path == "/docs":
             self._send(200, (STATIC / "docs.html").read_bytes(), "text/html; charset=utf-8")
+        elif path == "/icon.svg":
+            self._send(200, (STATIC / "icon.svg").read_bytes(), "image/svg+xml", {"Cache-Control": "public, max-age=86400"})
         elif path.startswith("/docs/") and path[6:] in SWAGGER_ASSETS:
             name = path[6:]
             if (SWAGGER_DIR / name).is_file():

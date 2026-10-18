@@ -205,7 +205,7 @@ class Flow(unittest.TestCase):
         return self.req("/auth/callback?" + urllib.parse.urlencode(got), cookie=login)
 
     def test_open_paths(self):
-        for p in ("/healthz", "/openapi.json", "/docs", "/auth/me"):
+        for p in ("/healthz", "/openapi.json", "/docs", "/icon.svg", "/auth/me"):
             self.assertEqual(self.req(p)[0], 200, p)
         self.assertEqual(json.loads(self.req("/auth/me")[2]), {"auth": "oidc", "via": None, "user": None, "key": None})
 
