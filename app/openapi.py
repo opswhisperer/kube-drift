@@ -35,12 +35,16 @@ SPEC: dict = {
             "- **Orphaned resources** (`GET /api/orphans`): objects nothing uses, found by kor and "
             "cross-checked, with ignore state applied.\n\n"
             "The API never changes the cluster. POST endpoints only change kube-drift's own state "
-            "(ignores, ignore rules, rescans) or return text: `/api/orphans/commands` returns a kubectl "
+            "(ignores, ignore rules, rescans, API keys) or return text: `/api/orphans/commands` returns a kubectl "
             "script for a human to review and run. Responses never contain Secret data.\n\n"
-            "**Security: kube-drift has no authentication of its own.** It must only be reachable "
-            "through a gateway that authenticates every request (SSO for people, API keys or JWTs for "
-            "agents); any credentials you use belong to that gateway. If you can call this API without "
-            "having authenticated, the deployment is exposed — tell its operator.\n\n"
+            "**Authentication** depends on how kube-drift is deployed:\n\n"
+            "- **Built-in sign-in** (`auth.oidc` in its config; `GET /auth/me` says `\"auth\": \"oidc\"`): send an "
+            "API key as `Authorization: Bearer kd_…`. People make and revoke keys in the dashboard (API keys) "
+            "after signing in; the dashboard itself uses a session cookie. Without either, `/api/…` answers 401.\n"
+            "- **No built-in sign-in** (`\"auth\": \"none\"`): kube-drift must only be reachable through a gateway "
+            "that authenticates every request, and any credentials you use belong to that gateway. If you "
+            "can call this API without having authenticated anywhere, the deployment is exposed — tell its "
+            "operator.\n\n"
             "Requests with a body must use `Content-Type: application/json`.\n\n"
             "Scans take time: check `scanning` and `scanned_at`, and after `POST /api/rescan` poll the "
             "GET endpoint until `scanning` is false and `scanned_at` has changed."
@@ -51,7 +55,10 @@ SPEC: dict = {
         {"name": "versions", "description": "Installed vs available versions."},
         {"name": "orphans", "description": "Unused resources, ignores and cleanup scripts."},
         {"name": "service", "description": "Scans, health and this document."},
+        {"name": "auth", "description": "Sign-in and API keys; only when built-in sign-in (`auth.oidc`) is on."},
     ],
+    # Either one; open endpoints say `security: []`. With built-in sign-in off, the gateway decides.
+    "security": [{"apiKey": []}, {"session": []}],
     "paths": {
         "/api/drift": {"get": {
             "tags": ["versions"], "operationId": "getVersionDrift",
@@ -180,21 +187,106 @@ SPEC: dict = {
                 "status": {"type": "string", "description": "`rescan requested`, or `already scanning: …`."},
                 "scope": {"enum": ["all", "versions", "orphans"]}}}}}}},
         }},
+        "/api/keys": {
+            "get": {
+                "tags": ["auth"], "operationId": "listApiKeys", "summary": "List API keys",
+                "description": "Signed-in people only (not with an API key). Keys themselves are never returned, only their first characters.",
+                "security": [{"session": []}],
+                "responses": {"200": {"description": "Keys, newest first", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"keys": {"type": "array", "items": {"$ref": "#/components/schemas/ApiKey"}}}}}}},
+                    "403": _ERROR, "404": {**_ERROR, "description": "Built-in sign-in is off"}},
+            },
+            "post": {
+                "tags": ["auth"], "operationId": "createApiKey", "summary": "Create an API key",
+                "description": "Signed-in people only. The key is in the response once; kube-drift stores only its SHA-256.",
+                "security": [{"session": []}],
+                "requestBody": _body({"type": "object", "required": ["name"], "properties": {
+                    "name": {"type": "string", "maxLength": 100, "description": "What it's for."},
+                    "days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Expires after this many days; leave out for never."}}}),
+                "responses": {
+                    "201": {"description": "Created", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                        "token": {"type": "string", "description": "The key, `kd_…`. Shown only here."},
+                        "key": {"$ref": "#/components/schemas/ApiKey"}}}}}},
+                    "400": _ERROR, "403": _ERROR, "404": {**_ERROR, "description": "Built-in sign-in is off"}, "415": _ERROR},
+            },
+        },
+        "/api/keys/delete": {"post": {
+            "tags": ["auth"], "operationId": "revokeApiKey", "summary": "Revoke an API key",
+            "description": "Signed-in people only. Takes effect at once.",
+            "security": [{"session": []}],
+            "requestBody": _body({"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}}),
+            "responses": {
+                "200": {"description": "Revoked", "content": {"application/json": {"schema": {"type": "object", "properties": {"revoked": {"const": True}}}}}},
+                "404": {"description": "No such key, or built-in sign-in is off", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "revoked": {"const": False}, "error": {"type": "string"}}}}}},
+                "403": _ERROR, "415": _ERROR},
+        }},
+        "/auth/me": {"get": {
+            "tags": ["auth"], "operationId": "whoami", "summary": "Whether sign-in is on, and who is calling",
+            "security": [],
+            "responses": {"200": _json("Me")},
+        }},
+        "/auth/login": {"get": {
+            "tags": ["auth"], "operationId": "login", "summary": "Start signing in (browser): redirects to the identity provider",
+            "security": [],
+            "parameters": [{"name": "next", "in": "query", "required": False, "schema": {"type": "string", "default": "/"},
+                            "description": "Local path to return to afterwards."}],
+            "responses": {"302": {"description": "To the identity provider"}, "404": _ERROR,
+                          "502": {"description": "The identity provider can't be reached (HTML page)"}},
+        }},
+        "/auth/callback": {"get": {
+            "tags": ["auth"], "operationId": "loginCallback", "summary": "Where the identity provider sends the browser back",
+            "security": [],
+            "responses": {"302": {"description": "Signed in; back to `next`"},
+                          "400": {"description": "Sign-in failed (HTML page)"},
+                          "403": {"description": "Not in an allowed group or email list (HTML page)"}, "404": _ERROR},
+        }},
+        "/auth/logout": {"post": {
+            "tags": ["auth"], "operationId": "logout", "summary": "Sign out of kube-drift",
+            "security": [],
+            "responses": {"200": {"description": "Session cookie cleared", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                "redirect": {"type": "string", "description": "Where to send the browser: the identity provider's end-session page, or `/`."}}}}}},
+                "404": _ERROR},
+        }},
         "/healthz": {"get": {
-            "tags": ["service"], "operationId": "healthz", "summary": "Liveness",
+            "tags": ["service"], "operationId": "healthz", "summary": "Liveness", "security": [],
             "responses": {"200": _json("Ok")},
         }},
         "/readyz": {"get": {
             "tags": ["service"], "operationId": "readyz", "summary": "Readiness: 503 until the first version scan has data",
+            "security": [],
             "responses": {"200": _json("Ok"), "503": _json("Ok", "Not ready")},
         }},
         "/openapi.json": {"get": {
-            "tags": ["service"], "operationId": "openapi", "summary": "This document",
+            "tags": ["service"], "operationId": "openapi", "summary": "This document", "security": [],
             "responses": {"200": {"description": "OpenAPI 3.1", "content": {"application/json": {"schema": {"type": "object"}}}}},
         }},
     },
-    "components": {"schemas": {
+    "components": {
+    "securitySchemes": {
+        "apiKey": {"type": "http", "scheme": "bearer", "bearerFormat": "kd_…",
+                   "description": "An API key made in the dashboard (API keys), when built-in sign-in is on."},
+        "session": {"type": "apiKey", "in": "cookie", "name": "kd_session",
+                    "description": "Set by signing in at /auth/login in a browser."},
+    },
+    "schemas": {
         "Error": {"type": "object", "properties": {"error": {"type": "string"}}},
+        "ApiKey": {"type": "object", "properties": {
+            "id": {"type": "string"}, "name": {"type": "string"},
+            "prefix": {"type": "string", "description": "The key's first characters, to recognise it."},
+            "created_by": {"type": "string", "description": "Email (or name) of who made it."},
+            "created_at": {"type": "string", "format": "date-time"},
+            "expires_at": {"type": ["string", "null"], "format": "date-time"},
+            "last_used_at": {"type": ["string", "null"], "format": "date-time", "description": "Saved every few minutes, so it may lag."},
+        }},
+        "Me": {"type": "object", "properties": {
+            "auth": {"enum": ["oidc", "none"], "description": "`none`: no built-in sign-in; a gateway must authenticate."},
+            "via": {"enum": ["session", "api-key", None], "description": "How this request authenticated; null if it didn't."},
+            "user": {"type": ["object", "null"], "description": "Signed-in person.", "properties": {
+                "sub": {"type": ["string", "null"]}, "name": {"type": ["string", "null"]}, "email": {"type": ["string", "null"]}}},
+            "key": {"type": ["object", "null"], "description": "The API key used.", "properties": {
+                "id": {"type": "string"}, "name": {"type": "string"}}},
+        }},
         "Ok": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
         "ScanState": {"type": "object", "properties": {
             "cluster": {"type": "string", "description": "Cluster name from the config."},

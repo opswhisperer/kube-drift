@@ -34,7 +34,7 @@ def props(name: str) -> set[str]:
 class Spec(unittest.TestCase):
     def test_every_route_is_documented(self):
         src = (ROOT / "app" / "main.py").read_text()
-        routes = set(re.findall(r'"(/(?:api|healthz|readyz|openapi)[^"?]*)"', src)) - {"/api/"}
+        routes = set(re.findall(r'"(/(?:api|auth|healthz|readyz|openapi)[^"?]*)"', src)) - {"/api/", "/auth/"}
         self.assertEqual(routes - set(SPEC["paths"]), set())
         self.assertEqual(set(SPEC["paths"]) - routes - NOT_API, set())
 

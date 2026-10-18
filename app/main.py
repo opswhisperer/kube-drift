@@ -7,18 +7,24 @@ Second category: orphaned resources, found by kor and enriched (orphans.py). The
 ignored (persisted); export and delete are kubectl scripts to copy — the app never writes
 to the cluster.
 
+Auth (auth.py) is optional: with `auth.oidc` in the config, people sign in through OIDC and
+scripts use API keys; without it, kube-drift must sit behind a gateway that authenticates.
+
 Env: PORT (8080), CONFIG (/config/config.yaml; YAML or JSON, optional), CLUSTER_NAME (overrides
 config), POD_NAMESPACE (kube-drift's own namespace, protected), SCAN_INTERVAL_HOURS (overrides config),
 STATE_FILE (/tmp/drift.json), DATA_DIR (/data: ignores, last orphan scan, image label cache), KOR_BIN (kor), KOR_KUBECONFIG,
 GITHUB_TOKEN (optional), LOCAL_REGISTRY_AUTH (user:pass, optional),
-KUBE_API / KUBE_TOKEN (out-of-cluster dev, e.g. `kubectl proxy`).
+KUBE_API / KUBE_TOKEN (out-of-cluster dev, e.g. `kubectl proxy`),
+OIDC_CLIENT_SECRET (or the env var auth.oidc.client_secret_env names), SESSION_SECRET (optional).
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
 import threading
+import urllib.parse
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,7 +32,7 @@ from pathlib import Path
 
 import yaml
 
-from . import orphans
+from . import auth, orphans
 from .openapi import SPEC
 from .k8s import K8s
 from .scan import Scanner, apply_ignores, kube_version, now_iso
@@ -47,6 +53,9 @@ SWAGGER_UI_VERSION = "5.33.1"
 SWAGGER_DIR = STATIC / "swagger-ui"
 SWAGGER_ASSETS = {"swagger-ui-bundle.js": "application/javascript", "swagger-ui.css": "text/css"}
 API_LINKS = '</openapi.json>; rel="service-desc", </docs>; rel="service-doc"'  # RFC 8631
+AUTH: auth.Auth | None = None  # set from config in main(); None = no built-in auth (gateway does it)
+OPEN = {"/healthz", "/readyz", "/openapi.json", "/docs", "/icon.svg"}  # reachable without signing in
+PAGES = {"/", "/index.html"}  # signed-out people are sent to sign in; API callers get 401
 
 
 def load_config() -> dict:
@@ -242,19 +251,117 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in ("/healthz", "/readyz"):
             log.debug("%s %s", self.address_string(), fmt % args)
 
-    def _send(self, code: int, body: bytes, ctype: str = "application/json; charset=utf-8", extra: dict | None = None):
+    def _send(self, code: int, body: bytes, ctype: str = "application/json; charset=utf-8", extra: dict | None = None,
+              cookies: list[str] | None = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         headers = {"Cache-Control": "no-store", **({"Link": API_LINKS} if self.path.startswith("/api/") else {}), **(extra or {})}
         for k, v in headers.items():
             self.send_header(k, v)
+        for c in cookies or []:
+            self.send_header("Set-Cookie", c)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    # ----- authentication (only when auth.oidc is configured) -----
+    def _gate(self, path: str) -> bool:
+        """True if the request may go on. Otherwise answers it: signed-out people are sent to sign
+        in, everything else gets 401. Sets self.who to the caller (None when auth is off)."""
+        self.who = None
+        if AUTH is None or path in OPEN or (path.startswith("/docs/") and path[6:] in SWAGGER_ASSETS):
+            return True
+        self.who = AUTH.identify(self.headers)
+        if self.who:
+            return True
+        if path in PAGES and self.command in ("GET", "HEAD"):
+            self._send(302, b"", "text/plain", {"Location": "/auth/login?" + urllib.parse.urlencode({"next": self.path})})
+        else:
+            self._send(401, b'{"error":"sign in, or send an API key as Authorization: Bearer <key>"}', extra={
+                "WWW-Authenticate": 'Bearer realm="kube-drift"'})
+        return False
+
+    def _page(self, code: int, title: str, text: str, link: tuple[str, str] = ("/", "Back to kube-drift")):
+        body = (f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+                f'<title>{html.escape(title)}</title><body style="font:15px/1.5 system-ui,sans-serif;max-width:36em;'
+                f'margin:15vh auto;padding:0 16px"><h1 style="font-size:1.3em">{html.escape(title)}</h1>'
+                f'<p>{html.escape(text)}</p><p><a href="{html.escape(link[0])}">{html.escape(link[1])}</a></p>')
+        self._send(code, body.encode(), "text/html; charset=utf-8")
+
+    def _auth_get(self, path: str):
+        query = dict(urllib.parse.parse_qsl(self.path.split("?", 1)[1] if "?" in self.path else ""))
+        if path == "/auth/me":
+            who = AUTH.identify(self.headers) if AUTH else None
+            self._json(200, {"auth": "oidc" if AUTH else "none", "via": (who or {}).get("via"),
+                             "user": (who or {}).get("user"), "key": (who or {}).get("key")})
+        elif AUTH is None:
+            self._send(404, b'{"error":"sign-in is off: set auth.oidc in the config"}')
+        elif path == "/auth/login":
+            try:
+                url, cookie = AUTH.start_login(query.get("next") or "/")
+            except Exception as e:  # noqa: BLE001
+                log.warning("sign-in: cannot reach the identity provider: %s", e)
+                self._page(502, "Can't reach the identity provider", f"{type(e).__name__}: {e}"[:300], ("/auth/login", "Try again"))
+                return
+            self._send(302, b"", "text/plain", {"Location": url}, [cookie])
+        elif path == "/auth/callback":
+            try:
+                where, cookies = AUTH.finish_login(self.headers, query)
+            except PermissionError as e:
+                self._page(403, "Not allowed", str(e), ("/auth/login", "Sign in as someone else"))
+                return
+            except Exception as e:  # noqa: BLE001
+                log.warning("sign-in failed: %s", e)
+                self._page(400, "Sign-in failed", f"{e}"[:300], ("/auth/login", "Try again"))
+                return
+            self._send(302, b"", "text/plain", {"Location": where}, cookies)
+        else:
+            self._send(404, b'{"error":"not found"}')
+
+    def _logout(self):
+        if AUTH is None:
+            self._send(404, b'{"error":"sign-in is off: set auth.oidc in the config"}')
+            return
+        self._send(200, json.dumps({"redirect": AUTH.oidc.end_session_url() or "/"}).encode(), cookies=[AUTH.logout_cookie()])
+
+    # ----- API keys (kube-drift's own state; made and revoked by signed-in people only) -----
+    def _keys_allowed(self) -> bool:
+        if AUTH is None:
+            self._send(404, b'{"error":"API keys need sign-in: set auth.oidc in the config"}')
+        elif (self.who or {}).get("via") != "session":
+            self._send(403, b'{"error":"API keys are managed by signed-in people, not with an API key"}')
+        else:
+            return True
+        return False
+
+    def _create_key(self, body: dict):
+        name, days = str(body.get("name") or "").strip(), body.get("days")
+        if not name:
+            self._json(400, {"error": "name: what the key is for"})
+            return
+        if days is not None and (not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 3650):
+            self._json(400, {"error": "days: a whole number from 1 to 3650, or leave it out for a key that doesn't expire"})
+            return
+        user = self.who["user"]
+        token, key = AUTH.keys.create(name, user.get("email") or user.get("name") or user.get("sub") or "", days)
+        log.info("api key %s (%s) created by %s", key["id"], key["name"], key["created_by"])
+        self._json(201, {"token": token, "key": key})
+
+    def _revoke_key(self, body: dict):
+        kid = str(body.get("id") or "")
+        ok = AUTH.keys.revoke(kid)
+        if ok:
+            log.info("api key %s revoked by %s", kid, self.who["user"].get("email") or self.who["user"].get("sub"))
+        self._json(200 if ok else 404, {"revoked": ok})
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path.startswith("/auth/"):
+            self._auth_get(path)
+            return
+        if not self._gate(path):
+            return
         if path in ("/", "/index.html"):
             self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif path == "/api/drift":
@@ -264,10 +371,15 @@ class Handler(BaseHTTPRequestHandler):
                        {"Content-Disposition": "attachment; filename=kube-drift.csv"})
         elif path == "/api/orphans":
             self._send(200, json.dumps(ORPHANS.snapshot()).encode())
+        elif path == "/api/keys":
+            if self._keys_allowed():
+                self._json(200, {"keys": AUTH.keys.list()})
         elif path == "/openapi.json":
             self._send(200, json.dumps(SPEC).encode())
         elif path == "/docs":
             self._send(200, (STATIC / "docs.html").read_bytes(), "text/html; charset=utf-8")
+        elif path == "/icon.svg":
+            self._send(200, (STATIC / "icon.svg").read_bytes(), "image/svg+xml", {"Cache-Control": "public, max-age=86400"})
         elif path.startswith("/docs/") and path[6:] in SWAGGER_ASSETS:
             name = path[6:]
             if (SWAGGER_DIR / name).is_file():
@@ -286,6 +398,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        if path == "/auth/logout":
+            self._logout()
+            return
+        if not self._gate(path):
+            return
         if path == "/api/rescan":
             scope = "orphans" if "scope=orphans" in query else "versions" if "scope=versions" in query else "all"
             busy = []
@@ -302,9 +419,12 @@ class Handler(BaseHTTPRequestHandler):
         actions = {"/api/orphans/ignore": self._ignore, "/api/orphans/unignore": self._unignore,
                    "/api/orphans/commands": self._commands,
                    "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule,
-                   "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates}
+                   "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates,
+                   "/api/keys": self._create_key, "/api/keys/delete": self._revoke_key}
         if path not in actions:
             self._send(404, b'{"error":"not found"}')
+            return
+        if path.startswith("/api/keys") and not self._keys_allowed():
             return
         # JSON only: a cross-site form or text/plain POST can't reach the ignore endpoints
         # without a CORS preflight, which this server never answers.
@@ -455,7 +575,9 @@ def to_csv(snap: dict) -> str:
 
 
 def main():
+    global AUTH
     cfg = load_config()
+    AUTH = auth.from_config(cfg, DATA_DIR)  # a broken auth config stops startup rather than run open
     CLUSTER["name"] = os.environ.get("CLUSTER_NAME") or str(cfg.get("cluster_name") or "")
     threading.Thread(target=scan_loop, args=(cfg,), daemon=True, name="scan").start()
     ORPHANS.context = (cfg.get("orphans") or {}).get("kubectl_context")
@@ -464,8 +586,11 @@ def main():
         threading.Thread(target=orphan_loop, args=(cfg,), daemon=True, name="orphans").start()
     port = int(os.environ.get("PORT", "8080"))
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    log.warning("kube-drift has no authentication: expose it only through a gateway that "
-                "authenticates every request (README: 'Exposing it')")
+    if AUTH:
+        log.info("sign-in: OIDC via %s; API keys in %s", AUTH.oidc.cfg.issuer, AUTH.keys.file)
+    else:
+        log.warning("built-in sign-in is off (no auth.oidc in the config): expose kube-drift only through "
+                    "a gateway that authenticates every request (README: 'Exposing it')")
     log.info("kube-drift %s listening on :%d", VERSION, port)
     srv.serve_forever()
 

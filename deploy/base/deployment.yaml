@@ -62,6 +62,13 @@ spec:
                   name: kube-drift-credentials
                   key: github-token
                   optional: true
+            # Only with built-in sign-in (auth.oidc in the config): the OIDC client's secret.
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kube-drift-credentials
+                  key: oidc-client-secret
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /config

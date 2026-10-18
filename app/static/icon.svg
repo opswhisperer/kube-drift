@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>kube-drift</title>
+  <!-- Where the cluster should be (dashed) and where it has drifted to. -->
+  <rect width="512" height="512" rx="112" fill="#0d6b67"/>
+  <polygon points="232.0,138.0 339.9,190.0 366.5,306.7 291.9,400.3 172.1,400.3 97.5,306.7 124.1,190.0" fill="none" stroke="#ffffff" stroke-opacity=".45" stroke-width="20" stroke-linejoin="round" stroke-dasharray="34 26"/>
+  <polygon points="319.4,92.1 411.5,168.6 409.1,288.3 314.0,361.1 197.8,332.2 148.0,223.2 202.1,116.4" fill="#0d6b67" stroke="#ffffff" stroke-width="30" stroke-linejoin="round"/>
+  <circle cx="286" cy="226" r="34" fill="#f5a65c"/>
+</svg>
