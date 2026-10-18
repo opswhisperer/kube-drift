@@ -11,11 +11,11 @@ A dashboard for the two kinds of drift a long-lived Kubernetes cluster collects:
 It runs in the cluster, rescans on a timer, and is **read-only**: it never changes the cluster.
 Cleanup is a kubectl script it writes for you to review and run.
 
-> [!WARNING]
-> **Out of the box, kube-drift has no authentication.** Anyone who can reach it can read your
-> cluster's full inventory and change its ignore list. Turn on built-in OIDC sign-in, or put it
-> behind a gateway that authenticates every request, or only use it through
-> `kubectl port-forward`. See [Exposing it](#exposing-it).
+> [!NOTE]
+> kube-drift shows your cluster's full inventory. Sign-in is built in (OIDC, plus API keys for
+> scripts) but off until you configure it. Turn it on, or put kube-drift behind an
+> authenticating gateway, before anyone else can reach it, and keep it on your private network.
+> See [Exposing it](#exposing-it).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/versions-dark.png">
@@ -107,37 +107,116 @@ probe lookups that use GitHub releases. Private-registry credentials are covered
 
 ### Exposing it
 
-> [!CAUTION]
-> Unless you turn on built-in sign-in, kube-drift has **no login and no API keys**. Whoever can
-> reach the service can:
->
-> - read everything it reports: every workload, image, version and Helm release, and the names
->   of your Secrets, ConfigMaps, RoleBindings and other resources, which maps out your cluster
->   for an attacker;
-> - change its state: ignore findings, add or remove ignore rules, start scans.
->
-> It never changes the cluster and never returns Secret data, but the inventory alone is
-> sensitive. **Turn on built-in sign-in, or only make it reachable through a gateway that
-> authenticates every request.**
+kube-drift never changes the cluster and never returns Secret data, but what it reports is
+still sensitive: every workload, image, version and Helm release, and the names of your
+Secrets, ConfigMaps and RoleBindings, which together map out your cluster. Anyone who can use it
+can also change its ignores and rules and start scans. Sign-in is off until you configure it, so
+until then, anyone who can reach the service can do all of that.
 
-**Built-in sign-in.** Add `auth.oidc` to the config (see [`config/example.yaml`](config/example.yaml))
-and put the client secret in `kube-drift-credentials` as `oidc-client-secret`. Then:
+**Keep it private.** Even with sign-in on, serve it on your LAN, VPN or tailnet rather than the
+public internet. Sign-in is the lock; not publishing it is the fence.
 
-- people sign in with your OIDC provider (Authentik, Keycloak, Dex, Entra ID, Google…), limited
-  to `allowed_groups` or `allowed_emails` if you set them;
-- scripts and agents use API keys (`Authorization: Bearer kd_…`). A signed-in person makes and
-  revokes them under **API keys** in the dashboard. kube-drift keeps only their SHA-256, on its
-  volume, and shows each key once. A key can do what the dashboard can, except manage keys;
-- `/healthz`, `/readyz`, `/openapi.json` and `/docs` stay open. Everything else needs a sign-in
-  or a key: the dashboard redirects to the provider, and `/api/…` answers 401.
+**Use built-in sign-in, or authentication in a gateway**, described below.
 
-For Authentik: create an OAuth2/OpenID provider (confidential client, redirect URI
-`https://<kube-drift's host>/auth/callback`, default scopes) and an application for it. The issuer
-is `https://<authentik>/application/o/<application slug>/`.
+#### Built-in sign-in
 
-A gateway still makes sense in front of it for TLS. The NetworkPolicy advice below still applies.
+With sign-in on:
 
-**Or authentication in a gateway**, with built-in sign-in off:
+- **people** sign in with your OIDC provider (Authentik, Keycloak, Dex, Entra ID, Google…). You
+  can limit it to some groups or email addresses;
+- **scripts and agents** send an API key: `Authorization: Bearer kd_…`. Signed-in people make
+  and revoke keys under **API keys** in the dashboard header. Each key is shown once; kube-drift
+  keeps only its SHA-256, on its volume. A key can do what the dashboard can, except manage keys;
+- `/healthz`, `/readyz`, `/openapi.json`, `/docs` and `/icon.svg` stay open. Everything else
+  needs a sign-in or a key: the dashboard redirects to your provider, and `/api/…` answers 401.
+
+Sign-in is set up in the config file and a Secret, not in the dashboard. That way, nobody who
+reaches the dashboard can switch it off. It takes four steps.
+
+**1. Register kube-drift with your provider** as a confidential OAuth2/OIDC client:
+
+| Setting | Value |
+|---|---|
+| Client type | Confidential (it has a client secret) |
+| Redirect URI | `https://<kube-drift's host>/auth/callback`, exactly: https, no trailing slash |
+| Scopes | `openid profile email` |
+| Groups | if you'll use `allowed_groups`, the ID token must carry a `groups` claim |
+
+In **Authentik**: Applications → Providers → Create → OAuth2/OpenID Provider.
+
+- Authorization flow: `default-provider-authorization-implicit-consent`.
+- Client type: Confidential. Client ID: `kube-drift`.
+- Redirect URIs: Strict, `https://<kube-drift's host>/auth/callback`.
+- Signing key: any.
+- Leave the default scopes. Authentik's `profile` scope sends `groups`.
+- Keep **Include claims in id_token** on.
+
+Then create an Application with the slug `kube-drift` that uses this provider. The issuer URL is
+`https://<authentik>/application/o/kube-drift/`. Its `.well-known/openid-configuration` should
+load in a browser.
+
+**2. Give kube-drift the client secret.** The Deployment reads `oidc-client-secret` from the
+`kube-drift-credentials` Secret into `OIDC_CLIENT_SECRET`:
+
+```bash
+kubectl -n kube-drift create secret generic kube-drift-credentials \
+  --from-literal=oidc-client-secret='<client secret>'
+```
+
+If that Secret already exists (for `github-token`), add the key to it instead, or manage the
+Secret with External Secrets.
+
+**3. Turn it on in the config** (`auth:` in [`config/example.yaml`](config/example.yaml) lists every
+option):
+
+```yaml
+auth:
+  oidc:
+    issuer: https://auth.example.com/application/o/kube-drift/
+    client_id: kube-drift
+    redirect_url: https://drift.example.com/auth/callback   # the same URI as in step 1
+    allowed_groups: [kube-drift-admins]                    # optional; or allowed_emails
+```
+
+With neither `allowed_groups` nor `allowed_emails`, anyone your provider signs in gets in. In that
+case, restrict access in the provider instead, for example with an Authentik application binding.
+
+**4. Deploy and check.** The log should say `sign-in: OIDC via <issuer>`. Then:
+
+```bash
+curl -s https://drift.example.com/auth/me         # {"auth": "oidc", "via": null, ...}
+curl -s -o /dev/null -w '%{http_code}\n' https://drift.example.com/api/drift   # 401
+```
+
+Open the dashboard and sign in. **API keys**, your name and **Sign out** appear in the header.
+
+**API keys.** Under **API keys**, name the key after what will use it, pick an expiry, and copy
+the key; it's shown only once. Keep it in a password manager or secret store, not in a file:
+
+```bash
+curl -H "Authorization: Bearer $KUBE_DRIFT_API_KEY" https://drift.example.com/api/drift
+```
+
+Revoking a key in the same dialog takes effect at once.
+
+**If something goes wrong:**
+
+| What you see | Why |
+|---|---|
+| The provider says the redirect URI is invalid or mismatched | Its redirect URI isn't exactly `redirect_url`. Check https, the trailing slash, the `/auth/callback` path |
+| kube-drift's "Not allowed" page | You're not in `allowed_groups`/`allowed_emails`, or the ID token has no `groups` claim (in Authentik, keep "Include claims in id_token" on) |
+| The pod won't start: `auth.oidc: the client secret env var OIDC_CLIENT_SECRET is empty` | Step 2 is missing. kube-drift refuses to start rather than run without sign-in |
+| "Can't reach the identity provider" | kube-drift can't fetch `<issuer>/.well-known/openid-configuration`: check the issuer URL, and DNS and egress from the pod |
+| Removed from the group but still signed in | Sessions last `session_hours` (12 by default). The group is checked again at the next sign-in |
+
+Sessions are HMAC-signed cookies. To share them between replicas, set `SESSION_SECRET`;
+otherwise kube-drift keeps a key on its volume. A gateway in front still makes sense for TLS. A
+NetworkPolicy that only admits traffic from the gateway's namespace keeps other pods from calling
+kube-drift directly.
+
+#### Authentication in a gateway
+
+With built-in sign-in off:
 
 - **People:** single sign-on in front of it: oauth2-proxy, your ingress controller's OIDC
   support (Envoy Gateway and Istio have it built in), or an identity-aware proxy.
@@ -146,7 +225,8 @@ A gateway still makes sense in front of it for TLS. The NetworkPolicy advice bel
 - **Inside the cluster:** the gateway is the front door, but any pod can call the Service
   directly. Add a NetworkPolicy that only admits traffic from your gateway's namespace.
 - **Not enough on their own:** an unauthenticated Ingress or LoadBalancer, an IP allowlist, or
-  a hostname nobody knows. A VPN is fine if everyone on it should see your cluster's inventory.
+  a hostname nobody knows. A VPN without sign-in is fine only if everyone on it should see your
+  cluster's inventory.
 
 ## Version drift
 
