@@ -12,9 +12,10 @@ It runs in the cluster, rescans on a timer, and is **read-only**: it never chang
 Cleanup is a kubectl script it writes for you to review and run.
 
 > [!WARNING]
-> **kube-drift has no authentication.** Anyone who can reach it can read your cluster's full
-> inventory and change its ignore list. Never expose it directly: use `kubectl port-forward`, or
-> put it behind a gateway that authenticates every request. See [Exposing it](#exposing-it).
+> **Out of the box, kube-drift has no authentication.** Anyone who can reach it can read your
+> cluster's full inventory and change its ignore list. Turn on built-in OIDC sign-in, or put it
+> behind a gateway that authenticates every request, or only use it through
+> `kubectl port-forward`. See [Exposing it](#exposing-it).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/versions-dark.png">
@@ -107,8 +108,8 @@ probe lookups that use GitHub releases. Private-registry credentials are covered
 ### Exposing it
 
 > [!CAUTION]
-> kube-drift has **no login, no API keys and no access control**, by design: authentication
-> belongs in the gateway in front of it. Whoever can reach the service can:
+> Unless you turn on built-in sign-in, kube-drift has **no login and no API keys**. Whoever can
+> reach the service can:
 >
 > - read everything it reports: every workload, image, version and Helm release, and the names
 >   of your Secrets, ConfigMaps, RoleBindings and other resources, which maps out your cluster
@@ -116,9 +117,27 @@ probe lookups that use GitHub releases. Private-registry credentials are covered
 > - change its state: ignore findings, add or remove ignore rules, start scans.
 >
 > It never changes the cluster and never returns Secret data, but the inventory alone is
-> sensitive. **Only make it reachable through a gateway that authenticates every request.**
+> sensitive. **Turn on built-in sign-in, or only make it reachable through a gateway that
+> authenticates every request.**
 
-What that looks like:
+**Built-in sign-in.** Add `auth.oidc` to the config (see [`config/example.yaml`](config/example.yaml))
+and put the client secret in `kube-drift-credentials` as `oidc-client-secret`. Then:
+
+- people sign in with your OIDC provider (Authentik, Keycloak, Dex, Entra ID, Google…), limited
+  to `allowed_groups` or `allowed_emails` if you set them;
+- scripts and agents use API keys (`Authorization: Bearer kd_…`). A signed-in person makes and
+  revokes them under **API keys** in the dashboard. kube-drift keeps only their SHA-256, on its
+  volume, and shows each key once. A key can do what the dashboard can, except manage keys;
+- `/healthz`, `/readyz`, `/openapi.json` and `/docs` stay open. Everything else needs a sign-in
+  or a key: the dashboard redirects to the provider, and `/api/…` answers 401.
+
+For Authentik: create an OAuth2/OpenID provider (confidential client, redirect URI
+`https://<kube-drift's host>/auth/callback`, default scopes) and an application for it. The issuer
+is `https://<authentik>/application/o/<application slug>/`.
+
+A gateway still makes sense in front of it for TLS. The NetworkPolicy advice below still applies.
+
+**Or authentication in a gateway**, with built-in sign-in off:
 
 - **People:** single sign-on in front of it: oauth2-proxy, your ingress controller's OIDC
   support (Envoy Gateway and Istio have it built in), or an identity-aware proxy.
@@ -192,14 +211,16 @@ secret data and are written with mode 600. A PVC or PV backup is the manifest, n
 
 ## Security
 
-- **No authentication** — put it behind an authenticating gateway; see [Exposing it](#exposing-it).
+- **Authentication**: built-in OIDC sign-in and API keys, or an authenticating gateway; see
+  [Exposing it](#exposing-it). Sessions are HMAC-signed cookies (`HttpOnly`, `SameSite=Lax`,
+  `Secure` over https) keyed by `SESSION_SECRET` or a key kube-drift keeps on its volume.
 - **Read-only RBAC**: `get`/`list` on what the scans read, cluster-wide. That includes Secrets:
   Helm stores releases as Secrets, and kor checks whether Secrets are used. Kubernetes RBAC
   can't limit a list to one Secret type or label. Remove `secret` from `orphans.resources` to
   keep kor out of Secrets; the Helm scan still reads them.
 - The dashboard and API never return Secret data — only names.
 - Runs as non-root with a read-only root filesystem and no capabilities.
-- POST endpoints change only kube-drift's own state, and the ignore endpoints accept
+- POST endpoints change only kube-drift's own state (including API keys), and accept
   `application/json` only, so a cross-site form can't reach them.
 
 ## API
@@ -217,12 +238,16 @@ so tools and agents can discover it from any endpoint.
 | `POST /api/orphans/ignore`, `/unignore` | `{ids, note}` |
 | `POST /api/orphans/rules`, `/rules/delete` | `{rule, note}`, `{id}` |
 | `POST /api/orphans/commands` | `{ids, action: export\|delete}` → `{script, skipped}` |
+| `GET /api/keys`, `POST /api/keys`, `/api/keys/delete` | list, `{name, days?}` → `{token, key}`, `{id}`; signed-in people only |
+| `GET /auth/me` | `{auth: oidc\|none, via, user, key}`: is sign-in on, and who's calling |
+| `GET /auth/login`, `/auth/callback`, `POST /auth/logout` | browser sign-in and sign-out |
 | `GET /healthz`, `/readyz` | liveness; readiness (503 until the first version scan) |
 | `GET /openapi.json`, `/docs` | this API, as OpenAPI 3.1 and as Swagger UI |
 
 Environment: `CONFIG` (`/config/config.yaml`), `CLUSTER_NAME` (overrides the config),
-`SCAN_INTERVAL_HOURS`, `DATA_DIR` (`/data`), `GITHUB_TOKEN`, plus any `auth_env` you name under
-`registries`.
+`SCAN_INTERVAL_HOURS`, `DATA_DIR` (`/data`), `GITHUB_TOKEN`, `OIDC_CLIENT_SECRET`,
+`SESSION_SECRET` (optional; set it to share sessions between replicas), plus any `auth_env` you
+name under `registries`.
 
 ## Development
 

@@ -23,6 +23,35 @@ cluster_name: my-cluster
 scan_interval_hours: 6
 
 
+# ══════════════════════════════════════════════════════════════════════════════ SIGN-IN
+# Symptom: kube-drift is open to anyone who can reach it (the log says "built-in sign-in is off").
+# Fix:     either put it behind a gateway that authenticates every request (README: Exposing it),
+#          or turn on built-in sign-in: people sign in with your OIDC provider (Authentik,
+#          Keycloak, Dex, Entra ID, Google…), and scripts and agents use API keys that signed-in
+#          people make under "API keys" in the dashboard. Keys are kept, hashed, on kube-drift's
+#          volume; /healthz, /readyz, /openapi.json and /docs stay open.
+#
+# In your provider, register a confidential client whose redirect URI is <redirect_url> below.
+# Put its secret in the kube-drift-credentials Secret as oidc-client-secret (the Deployment
+# reads it into OIDC_CLIENT_SECRET).
+#
+#   issuer:         the provider's issuer URL (it serves .well-known/openid-configuration)
+#   client_id:      the client's id
+#   redirect_url:   https://<kube-drift's address>/auth/callback
+#   client_secret_env: env var holding the client secret (default OIDC_CLIENT_SECRET)
+#   allowed_groups: only members of these groups may sign in (from the `groups` claim)
+#   allowed_emails: or these people. With neither, anyone the provider lets in may sign in.
+#   groups_claim:   the claim that lists groups (default groups)
+#   scopes:         default [openid, profile, email]
+#   session_hours:  how long a sign-in lasts (default 12)
+auth:
+  # oidc:
+  #   issuer: https://auth.example.com/application/o/kube-drift/   # Authentik: /application/o/<slug>/
+  #   client_id: kube-drift
+  #   redirect_url: https://drift.example.com/auth/callback
+  #   allowed_groups: [kube-drift-admins]
+
+
 # ═════════════════════════════════════════════════════════════════════════ VERSION DRIFT
 
 # ── helm ─────────────────────────────────────────────────────────────────────────────────

@@ -42,6 +42,8 @@ header h1 span{color:var(--muted);font-weight:450;margin-left:6px}
 .meta{color:var(--muted);font-size:13px}
 .out{display:flex;gap:14px;align-items:baseline;font-size:13px}
 .out a{color:var(--muted);text-decoration:none} .out a:hover{color:var(--accent);text-decoration:underline}
+#who{display:inline-flex;gap:14px;align-items:baseline;color:var(--muted)} #who[hidden]{display:none}
+#who-name{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:7px;cursor:pointer;font:inherit}
 button:hover{border-color:var(--faint)}
 button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
@@ -166,6 +168,7 @@ dialog ul.list{margin:6px 0;padding-left:18px;font-family:var(--mono);font-size:
 .scopes .n{margin-left:auto;color:var(--muted);font-size:12px;white-space:nowrap}
 .rules{width:100%;font-size:12.5px}
 .rules td{padding:7px 6px;border-top:1px solid var(--line)}
+.newkey{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px} .newkey input{flex:1 1 12em;min-width:0}
 dialog pre.script{margin:8px 0 0;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 dialog .warn{background:var(--minor-bg);color:var(--minor);padding:8px 10px;border-radius:8px;margin:8px 0;font-size:12.5px}
 dialog input[type=text],dialog textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 10px;border-radius:8px;font:inherit}
@@ -198,6 +201,7 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
     <a id="csv" href="/api/drift.csv">CSV</a>
     <a id="json" href="/api/drift" target="_blank">JSON</a>
     <a href="/docs">API docs</a>
+    <span id="who" hidden><button class="link" id="keys" type="button">API keys</button> <span id="who-name"></span> <button class="link" id="signout" type="button">Sign out</button></span>
   </nav>
   <button class="primary" id="rescan">Rescan</button>
 </header>
@@ -476,7 +480,10 @@ function groupRows(rows){
   return [...g].sort(([a],[b])=>(!a-!b)||(GROUP_ORDER[state.group]?(GROUP_ORDER[state.group][a]??9)-(GROUP_ORDER[state.group][b]??9):0)||String(a).localeCompare(String(b)));
 }
 
-async function load(){ try{ const r=await fetch('/api/drift',{cache:'no-store'}); state.data=await r.json(); render(); }catch(e){ $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
+// Built-in sign-in (auth.oidc): an expired session makes the API answer 401; sign in again and come back.
+function signIn(){ location.href='/auth/login?next='+encodeURIComponent(location.pathname+location.hash); }
+async function get(path){ const r=await fetch(path,{cache:'no-store'}); if(r.status===401){ signIn(); throw new Error('signed out'); } return r.json(); }
+async function load(){ try{ state.data=await get('/api/drift'); render(); }catch(e){ $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
 // Rows and group headers are focusable: Enter or Space toggles them like a click.
 document.addEventListener('keydown',e=>{
   if((e.key==='Enter'||e.key===' ') && e.target.matches('tr.row,tr.grp')){ e.preventDefault(); e.target.click(); }
@@ -546,6 +553,7 @@ function modal({title, body, ok='OK', input=null}){
 
 async function call(path, body){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.status===401){ signIn(); throw new Error('signed out'); }
   if(!r.ok){ let m=r.statusText; try{ m=(await r.json()).error||m; }catch{} throw new Error(m); }
   return r.json();
 }
@@ -696,7 +704,7 @@ function renderO(){
   }).join(''):`<tr><td colspan="6" class="empty">${d.scanned_at?'Nothing matches these filters.':(d.scanning?'kor is scanning the cluster, which takes a few minutes.':'No orphan scan yet.')}</td></tr>`;
 }
 
-async function loadO(){ try{ const r=await fetch('/api/orphans',{cache:'no-store'}); ost.data=await r.json(); renderO(); }catch(e){ if(ost.view==='orphans') $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
+async function loadO(){ try{ ost.data=await get('/api/orphans'); renderO(); }catch(e){ if(ost.view==='orphans') $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
 function dispatch(a, ids){ return a==='ignore'?doIgnore(ids):a==='unignore'?doUnignore(ids):a==='rules'?showRules():doCommands(ids,a); }
 async function run(fn){ try{ await fn(); }catch(e){ toast('Failed: '+esc(e.message||e),8000); } }
 
@@ -728,6 +736,40 @@ document.addEventListener('change',e=>{
 $('#o-rules').addEventListener('click',()=>run(showRules));
 $('#o-q').addEventListener('input',e=>{ ost.q=e.target.value.trim().toLowerCase(); renderO(); });
 
+/* ------------------------------------------------------------------ sign-in and API keys */
+async function whoami(){
+  try{ const me=await (await fetch('/auth/me',{cache:'no-store'})).json(); if(me.auth!=='oidc'||me.via!=='session') return;
+    $('#who-name').textContent=me.user?.name||me.user?.email||''; $('#who-name').title=me.user?.email||''; $('#who').hidden=false; }catch{}
+}
+$('#signout').addEventListener('click',()=>run(async()=>{ const res=await call('/auth/logout',{}); location.href=res.redirect||'/'; }));
+$('#keys').addEventListener('click',()=>run(showKeys));
+const EXPIRY=[[90,'Expires in 90 days'],[30,'Expires in 30 days'],[365,'Expires in a year'],[0,'Never expires']];
+async function showKeys(created){
+  const {keys}=await get('/api/keys');
+  const rows=keys.map(k=>`<tr><td><div>${esc(k.name)} <code class="sub">${esc(k.prefix)}…</code></div>
+    <div class="sub">by ${esc(k.created_by||'?')}, ${rel(k.created_at)} · ${k.last_used_at?'used '+rel(k.last_used_at):'never used'}${k.expires_at?' · expires '+esc(k.expires_at.slice(0,10)):''}</div></td>
+    <td><button type="button" class="danger" data-key-del="${esc(k.id)}" data-key-name="${esc(k.name)}">Revoke</button></td></tr>`).join('');
+  const fresh=created?`<div class="warn">Copy this key now; kube-drift keeps only its hash and can't show it again.</div>
+    <div style="margin-top:10px"><button type="button" class="primary" id="dlg-copy">Copy key</button> <span class="hint" id="dlg-copied"></span></div>
+    <pre class="script" id="dlg-script">${esc(created)}</pre>`:'';
+  const p=modal({title:'API keys', ok:null, body:`${fresh}<p>For scripts and agents: send <code>Authorization: Bearer &lt;key&gt;</code> to <code>/api/…</code>. A key can read and change what the dashboard can, except API keys.</p>
+    <div class="newkey"><input type="text" id="key-name" maxlength="100" placeholder="What it's for, e.g. renovate-bot" aria-label="key name">
+    <select id="key-days" aria-label="expiry">${EXPIRY.map(([d,l])=>`<option value="${d}">${l}</option>`).join('')}</select>
+    <button type="button" class="primary" id="key-new">Create key</button></div>
+    ${keys.length?`<table class="rules">${rows}</table>`:'<p class="hint">No keys yet.</p>'}`});
+  const cb=$('#dlg-copy'); if(cb) cb.addEventListener('click',async()=>{ $('#dlg-copied').textContent=await copyText(created)?'Copied.':'Selected — press ⌘C / Ctrl+C.'; });
+  await p;
+}
+document.addEventListener('click',e=>{
+  if(e.target.id==='key-new'){ const name=$('#key-name').value.trim(); if(!name){ $('#key-name').focus(); return; }
+    const days=parseInt($('#key-days').value,10);
+    run(async()=>{ const res=await call('/api/keys',days?{name,days}:{name}); $('#dlg').close(); showKeys(res.token); }); return; }
+  const del=e.target.closest('[data-key-del]'); if(!del) return;
+  if(!confirm(`Revoke "${del.dataset.keyName}"? Anything using it stops working.`)) return;
+  run(async()=>{ await call('/api/keys/delete',{id:del.dataset.keyDel}); $('#dlg').close(); toast('Key revoked'); showKeys(); });
+});
+
+whoami();
 if(location.hash==='#orphans') setView('orphans');
 load(); loadO(); setInterval(()=>{ load(); loadO(); }, 60000);
 </script>
