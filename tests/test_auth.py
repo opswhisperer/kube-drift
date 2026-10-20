@@ -99,7 +99,8 @@ class Units(unittest.TestCase):
 
     def test_safe_next(self):
         self.assertEqual(auth.safe_next("/#orphans"), "/#orphans")
-        for bad in ("https://evil.test/", "//evil.test", "/\\evil.test", "", None):
+        for bad in ("https://evil.test/", "//evil.test", "/\\evil.test", "", None,
+                    "/\r\nSet-Cookie: kd_session=x", "/\t/evil.test", "/\n/evil.test", "/ x", "/\x7f"):
             self.assertEqual(auth.safe_next(bad), "/")
 
     def test_keystore(self):
