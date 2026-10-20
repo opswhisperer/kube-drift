@@ -61,9 +61,12 @@ def parse_cookies(header: str | None) -> dict[str, str]:
 
 
 def safe_next(path: str | None) -> str:
-    """A local path to return to after sign-in; anything else (another site, //host) becomes /."""
+    """A local path to return to after sign-in; anything else becomes /: another site, //host, and
+    spaces or control characters, which would split the Location header or which browsers drop
+    (/<tab>/host is //host to them)."""
     p = path or "/"
-    return p if p.startswith("/") and not p.startswith("//") and "\\" not in p else "/"
+    ok = p.startswith("/") and not p.startswith("//") and "\\" not in p and all(" " < c < "\x7f" for c in p)
+    return p if ok else "/"
 
 
 class Signer:

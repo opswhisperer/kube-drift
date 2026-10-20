@@ -253,10 +253,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json; charset=utf-8", extra: dict | None = None,
               cookies: list[str] | None = None):
+        headers = {"Cache-Control": "no-store", **({"Link": API_LINKS} if self.path.startswith("/api/") else {}), **(extra or {})}
+        if any("\r" in v or "\n" in v for v in [*headers.values(), *(cookies or [])]):
+            raise ValueError("line break in a response header")  # it would start a header of its own
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        headers = {"Cache-Control": "no-store", **({"Link": API_LINKS} if self.path.startswith("/api/") else {}), **(extra or {})}
         for k, v in headers.items():
             self.send_header(k, v)
         for c in cookies or []:

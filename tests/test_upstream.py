@@ -97,8 +97,32 @@ class Credentials(unittest.TestCase):
     def test_other_realms_never_get_docker_io_credentials(self):
         cfg = {"docker.io": {"auth_env": "HUB_AUTH"}}
         with mock.patch.object(upstream, "get_json", self.get_json), mock.patch.dict("os.environ", {"HUB_AUTH": "me:pat"}):
-            Registry(cfg)._token(CHALLENGE["www-authenticate"], "a/b")
+            Registry(cfg)._token(CHALLENGE["www-authenticate"], "reg.example", "a/b")
         self.assertEqual(self.token_auth, [None])
+
+    def test_other_registries_never_get_a_docker_hub_token(self):
+        # Any registry an image names can point its challenge at auth.docker.io, to collect a
+        # Docker Hub token bought with docker.io's credentials (and scoped as it likes).
+        cfg = {"docker.io": {"auth_env": "HUB_AUTH"}}
+        self.HUB = {"www-authenticate": 'Bearer realm="https://auth.docker.io/token",service="registry.docker.io",'
+                                        'scope="repository:acme/private:pull,push"'}
+        with self.assertRaises(HttpError):
+            self.call("evil.example", cfg, {"HUB_AUTH": "me:pat"})
+        self.assertEqual(self.token_auth, [None])
+
+    def test_docker_io_credentials_buy_a_pull_token_over_https_only(self):
+        cfg = {"docker.io": {"auth_env": "HUB_AUTH"}}
+        urls = []
+        def get_json(url, headers=None):
+            urls.append(url)
+            return self.get_json(url, headers)
+        with mock.patch.object(upstream, "get_json", get_json), mock.patch.dict("os.environ", {"HUB_AUTH": "me:pat"}):
+            reg = Registry(cfg)
+            reg._token('Bearer realm="https://auth.docker.io/token",scope="repository:x/y:push&scope=a"',
+                       "docker.n8n.io", "n8nio/n8n")
+            reg._token('Bearer realm="http://auth.docker.io/token"', "registry-1.docker.io", "acme/private")
+        self.assertEqual(self.token_auth, ["Basic bWU6cGF0", None])
+        self.assertEqual(urls[0], "https://auth.docker.io/token?scope=repository%3An8nio%2Fn8n%3Apull")
 
     def test_anonymous_without_credentials(self):
         with self.assertRaises(HttpError):

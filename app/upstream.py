@@ -31,6 +31,10 @@ HOST_ALIASES = {
 }
 
 DOCKER_HUB_AUTH = "auth.docker.io"
+# Registries that hand out Docker Hub tokens, so docker.io's credentials may be traded for one
+# when they ask. Any other registry can name auth.docker.io in its challenge too: it gets no
+# credentials, or it could collect a Docker Hub token bought with them.
+DOCKER_HUB_HOSTS = {"registry-1.docker.io", "docker.n8n.io"}
 # Public registries: credentials under `registries` for one of these (to lift a rate limit or
 # reach a private repo) don't make its images your own builds.
 PUBLIC_REGISTRIES = {
@@ -173,7 +177,7 @@ class Registry:
             # Registries that take Basic auth are done; the rest (Docker Hub, GHCR, Quay) want the
             # credentials traded for a bearer token at the realm their challenge names.
             challenge = e.headers.get("www-authenticate", "")
-            token = self._token(challenge, repo, basic)
+            token = self._token(challenge, real, repo, basic)
             if not token:
                 raise
             with _token_lock:
@@ -181,17 +185,22 @@ class Registry:
             headers["Authorization"] = f"Bearer {token}"
             return request(url, method=method, headers=headers, insecure=insecure)
 
-    def _token(self, challenge: str, repo: str, basic: Optional[str] = None) -> Optional[str]:
+    def _token(self, challenge: str, real: str, repo: str, basic: Optional[str] = None) -> Optional[str]:
+        """Trade `basic` (or nothing) for a bearer token at the realm the challenge from `real` names."""
         m = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
         realm = m.get("realm")
         if not realm or not challenge.lower().startswith("bearer"):
             return None
-        if not basic and urllib.parse.urlsplit(realm).hostname == DOCKER_HUB_AUTH:
+        scope = m.get("scope") or f"repository:{repo}:pull"
+        parts = urllib.parse.urlsplit(realm)
+        if not basic and real in DOCKER_HUB_HOSTS and parts.scheme == "https" and parts.hostname == DOCKER_HUB_AUTH:
             # A Docker Hub mirror (docker.n8n.io) hands out Docker Hub tokens: docker.io's
-            # credentials get the same higher rate limit and private repos there.
+            # credentials get the same higher rate limit and private repos there. Bought with
+            # them, the token is for pulling this repo only, whatever the challenge asks for.
             basic = self._basic("docker.io")
-        q = {"service": m.get("service", ""), "scope": m.get("scope") or f"repository:{repo}:pull"}
-        url = realm + ("&" if "?" in realm else "?") + "&".join(f"{k}={v}" for k, v in q.items() if v)
+            scope = f"repository:{repo}:pull"
+        q = urllib.parse.urlencode({k: v for k, v in {"service": m.get("service", ""), "scope": scope}.items() if v})
+        url = realm + ("&" if "?" in realm else "?") + q
         data = get_json(url, headers={"Authorization": f"Basic {basic}"} if basic else None)
         return data.get("token") or data.get("access_token")
 
