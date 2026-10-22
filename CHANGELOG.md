@@ -1,10 +1,12 @@
 # Changelog
 
 Notable changes to kube-drift. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and versions follow [Semantic Versioning](https://semver.org/). Releases before 0.4.0 are in the
-git tags.
+and versions follow [Semantic Versioning](https://semver.org/). Releases before 0.5.0 are in the
+git tags and on the GitHub releases page.
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-10-21
 
 ### Added
 
@@ -24,4 +26,5 @@ git tags.
 - `registries:` entries are now needed only for `insecure: true`. `auth_env` still works and
   still wins for its host, so existing configs keep working unchanged.
 
-[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/opswhisperer/kube-drift/compare/v0.4.0...v0.5.0
