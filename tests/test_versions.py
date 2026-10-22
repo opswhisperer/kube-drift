@@ -239,6 +239,87 @@ class HelmNesting(unittest.TestCase):
         self.assertNotIn("release", comps["workload/ai/litellm/litellm"])
 
 
+class ReleaseNotesLinks(unittest.TestCase):
+    """Without a configured `ref`, rows link to where the project writes its release notes."""
+
+    def helm_k8s(self, **meta):
+        class K(FakeK8s):
+            def helm_releases(self):
+                rels = super().helm_releases()
+                for r in rels:
+                    if r["name"] == "longhorn":
+                        r.update(meta)
+                return rels
+        return K()
+
+    def helm_row(self, cfg=None, **meta):
+        return {c["id"]: c for c in Scanner(self.helm_k8s(**meta), cfg or {}).inventory()}["helm/longhorn-system/longhorn"]
+
+    def test_helm_rows_prefer_a_source_repos_releases(self):
+        row = self.helm_row(home="https://widget.example/", sources=["https://github.com/acme/widget"])
+        self.assertEqual(row["ref"], "https://github.com/acme/widget/releases")
+        self.assertEqual(self.helm_row(home="https://widget.example/", sources=[])["ref"], "https://widget.example/")
+        row = self.helm_row({"helm": {"longhorn": {"source": {"type": "github", "repo": "acme/gizmo"}}}},
+                            home="https://widget.example/")
+        self.assertEqual(row["ref"], "https://github.com/acme/gizmo/releases")
+        row = self.helm_row({"helm": {"longhorn": {"ref": "https://notes.example/"}}}, sources=["https://github.com/acme/widget"])
+        self.assertEqual(row["ref"], "https://notes.example/")
+
+    def test_image_with_github_source_links_its_releases(self):
+        cfg = {"images": {"ghcr.io/gethomepage/homepage": {"source": {"type": "github", "repo": "acme/homepage"}}}}
+        comps = {c["id"]: c for c in Scanner(FakeK8s(), cfg).inventory()}
+        self.assertEqual(comps["workload/apps/homepage/homepage"]["ref"], "https://github.com/acme/homepage/releases")
+
+    def test_chart_search_gets_the_charts_links_and_version(self):
+        sc = Scanner(self.helm_k8s(home="https://widget.example/", sources=["https://github.com/acme/widget"]), {})
+        row = {c["id"]: c for c in sc.inventory()}["helm/longhorn-system/longhorn"]
+        with mock.patch.object(upstream, "artifacthub_search", return_value=None) as search:
+            sc.resolve(row)
+        search.assert_called_once_with("longhorn", ("https://github.com/acme/widget", "https://widget.example/"), row["installed"])
+
+    def image_ref(self, labels=None, chart_links=(), guess=None, release="helm/apps/widget", repo="acme/widget"):
+        sc = Scanner(FakeK8s(), {})
+        sc.reg = mock.Mock()
+        sc.reg.digest.return_value = "sha256:r"
+        sc.reg.tags.return_value = ("1.0.0",)
+        sc.reg.labels.return_value = labels or {}
+        sc.chart_links = {"helm/apps/widget": chart_links}
+        comp = {"image": f"{repo}:1.0.0", "image_host": "docker.io", "image_repo": repo, "tag": "1.0.0",
+                "installed": "1.0.0", "floating": False, "running_digests": ["sha256:r"],
+                "ref": "https://hub.docker.com/r/acme/widget/tags", "source": {"type": "registry"}}
+        if release:
+            comp["release"] = release
+        with mock.patch.object(upstream, "github_guess", return_value=guess) as g:
+            sc.resolve(comp)
+        return comp["ref"], g
+
+    def test_image_link_order(self):
+        ref, g = self.image_ref(labels={"source": "https://github.com/acme/widget"}, guess="https://github.com/x/y")
+        self.assertEqual(ref, "https://github.com/acme/widget/releases")
+        g.assert_not_called()
+        ref, g = self.image_ref(chart_links=("https://github.com/acme/helm-charts", "https://github.com/acme-labs/widget"),
+                                guess="https://github.com/acme/widget")
+        self.assertEqual(ref, "https://github.com/acme-labs/widget/releases")
+        g.assert_not_called()
+        ref, g = self.image_ref(chart_links=("https://github.com/acme/helm-charts",), guess="https://github.com/acme/widget")
+        self.assertEqual(ref, "https://github.com/acme/widget")
+        g.assert_called_once_with("docker.io", "acme/widget")
+        self.assertEqual(self.image_ref(release=None)[0], "https://hub.docker.com/r/acme/widget/tags")
+
+    def test_github_trouble_keeps_the_registry_page(self):
+        sc_ref = None
+        with mock.patch.object(upstream, "github_guess", side_effect=HttpError(403, "x", {})):
+            sc = Scanner(FakeK8s(), {})
+            sc.reg = mock.Mock()
+            sc.reg.digest.return_value = None
+            sc.reg.tags.return_value = ("1.0.0",)
+            comp = {"image": "acme/widget:1.0.0", "image_host": "docker.io", "image_repo": "acme/widget", "tag": "1.0.0",
+                    "installed": "1.0.0", "floating": False, "running_digests": [], "ref": "https://hub.docker.com/r/acme/widget/tags"}
+            sc_ref = sc.resolve(comp)
+        self.assertEqual(sc_ref["ref"], "https://hub.docker.com/r/acme/widget/tags")
+        self.assertNotEqual(sc_ref["status"], "error")
+
+
 class RunningDigests(unittest.TestCase):
     """The runtime reports Docker Hub images fully qualified; the spec may use the short form."""
 

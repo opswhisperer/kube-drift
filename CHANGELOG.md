@@ -6,6 +6,21 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Changed
+
+- Fewer Helm rules needed: when several ArtifactHub repositories carry a chart of the same name,
+  kube-drift picks the one the installed chart's own home and source links name, then the most
+  starred. Before, any "verified publisher" won, and that's often a one-star mirror. A repository
+  older than the installed chart is ranked last.
+- "AH guess: <repo>" only shows when nothing clearly decided the pick, not on every chart name
+  that more than one repository uses.
+- Release-notes links need less config. A Helm release links to the releases page of the GitHub
+  repo it takes versions from, else of its chart's GitHub or GitLab source repo, before its home
+  page. An image set to take versions from GitHub links to that repo's releases. An image whose
+  labels don't name its project links to a repo its Helm chart lists under the image's name, else
+  to the GitHub repo named like it (`ghcr.io/org/app` → `github.com/org/app`; also for Docker Hub,
+  Quay and registry.k8s.io) when that repo has releases, before the registry page.
+
 ## [0.5.1] - 2026-10-22
 
 ### Added
