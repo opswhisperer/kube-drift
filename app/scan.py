@@ -154,12 +154,21 @@ class Scanner:
         # Running image digests from pods, keyed by normalized image ref -> set(digest). The
         # runtime reports Docker Hub images fully qualified ("docker.io/x/y:latest") while the
         # workload spec may say "x/y" or "x/y:latest", so both sides go through _image_key.
+        # The runtime may also report another name it holds for the same image ("x:2.37.1" for a
+        # pod that asked for "x:latest", or an old registry's name), so each digest is keyed by the
+        # image the pod spec asked for as well as the one the runtime reported.
         digests: dict[str, set[str]] = {}
         for p in self.k8s.pods():
+            spec = p.get("spec", {})
+            asked = {c.get("name"): c.get("image", "")
+                     for c in (spec.get("containers") or []) + (spec.get("initContainers") or [])}
             for cs in p.get("status", {}).get("containerStatuses", []) or []:
                 iid = cs.get("imageID", "")
-                if "@" in iid:
-                    digests.setdefault(_image_key(cs.get("image", "")), set()).add(iid.split("@", 1)[1])
+                if "@" not in iid:
+                    continue
+                for ref in {asked.get(cs.get("name")), cs.get("image")}:
+                    if ref:
+                        digests.setdefault(_image_key(ref), set()).add(iid.split("@", 1)[1])
 
         def add_image(ns: str, name: str, kind: str, image: str, helm_release: Optional[str], note: str = "",
                       release_ns: Optional[str] = None):

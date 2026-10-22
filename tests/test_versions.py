@@ -266,6 +266,35 @@ class RunningDigests(unittest.TestCase):
         self.assertEqual(comps["workload/apps/hubapp/hubapp"]["running_digests"], ["sha256:aaa"])
         self.assertEqual(comps["workload/apps/hubtool/hubtool"]["running_digests"], ["sha256:bbb"])
 
+    def test_running_digest_found_when_runtime_reports_another_name(self):
+        # The node already held the image under another name, so the runtime reports that name
+        # (a version tag, or an old registry) instead of the floating tag the pod asked for.
+        cases = (("shelf", "ghcr.io/example/shelf:latest", "ghcr.io/example/shelf:2.4.1", "sha256:ccc"),
+                 ("mcptool", "registry.example/team/mcptool:latest", "10.0.0.5:5002/mcptool:v0.2.6", "sha256:ddd"))
+
+        class K(FakeK8s):
+            def workloads(self):
+                ws = super().workloads()
+                for name, asked, _, _ in cases:
+                    ws.append({"kind": "Deployment", "metadata": {"namespace": "apps", "name": name, "annotations": {}},
+                               "spec": {"template": {"spec": {"containers": [{"name": name, "image": asked}]}}}})
+                return ws
+
+            def pods(self, namespace=None):
+                pods = super().pods(namespace)
+                for name, asked, reported, dig in cases:
+                    pods.append({"metadata": {"name": name, "namespace": "apps", "ownerReferences": [{"kind": "ReplicaSet"}]},
+                                 "spec": {"containers": [{"name": name, "image": asked}]},
+                                 "status": {"containerStatuses": [{"name": name, "image": reported,
+                                                                   "imageID": f"{reported.rsplit(':', 1)[0]}@{dig}"}]}})
+                return pods
+
+        sc = Scanner(K(), {})
+        sc.resolve = lambda c: c
+        comps = {c["id"]: c for c in sc.run()["components"]}
+        self.assertEqual(comps["workload/apps/shelf/shelf"]["running_digests"], ["sha256:ccc"])
+        self.assertEqual(comps["workload/apps/mcptool/mcptool"]["running_digests"], ["sha256:ddd"])
+
 
 if __name__ == "__main__":
     unittest.main()
