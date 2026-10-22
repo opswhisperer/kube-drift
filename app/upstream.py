@@ -611,21 +611,27 @@ _projects: dict[str, Optional[str]] = {}  # "owner/name" -> its releases page, o
 
 
 def github_project(owner_repo: str) -> Optional[str]:
-    """A GitHub repo's releases page, or None when it doesn't exist or has no releases (a repo
-    that only shares an image's name, such as an archived predecessor, rarely has them).
-    Remembered for the life of the process, unlike the per-scan caches: that hardly changes, and
-    GitHub allows only 60 anonymous calls an hour."""
+    """A GitHub repo's releases page, or None when it doesn't exist or has published nothing.
+    Asks the repo's public releases feed rather than the API, so it doesn't spend the 60 anonymous
+    API calls an hour that version lookups need; the feed lists tags when there are no releases.
+    A repo that moved to another owner counts (vmware-tanzu/velero → velero-io/velero); one renamed
+    away from the image's name doesn't (istio/pilot → istio/old_pilot_repo). Remembered for the
+    life of the process, unlike the per-scan caches: that hardly changes."""
     key = owner_repo.lower()
     if key in _projects:
         return _projects[key]
     try:
-        rels = get_json(f"{GH}/repos/{owner_repo}/releases?per_page=1", headers=_gh_headers())
+        r = request(f"https://github.com/{owner_repo}/releases.atom", headers={"Accept": "application/atom+xml"})
     except HttpError as e:
         if e.status != 404:
             raise  # rate limited or down: ask again next time
         link = None
     else:
-        link = f"https://github.com/{owner_repo}/releases" if rels else None
+        m = re.match(r"https://github\.com/([^/]+)/([^/]+)/releases\.atom", r.url or "")
+        owner, name = m.groups() if m else owner_repo.split("/", 1)
+        published = b"<entry>" in r.body
+        link = f"https://github.com/{owner}/{name}/releases" \
+            if published and name.lower() == owner_repo.split("/", 1)[1].lower() else None
     _projects[key] = link
     return link
 

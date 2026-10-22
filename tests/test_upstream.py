@@ -7,6 +7,7 @@ from unittest import mock
 
 from app import upstream
 from app.http import HttpError
+from app.http import Resp as HttpResp
 from app.upstream import Registry, label_link, reference_url
 
 CHALLENGE = {"www-authenticate": 'Bearer realm="https://reg.example/token",service="reg.example",scope="aws"'}
@@ -379,30 +380,42 @@ class GithubGuess(unittest.TestCase):
         upstream._projects.clear()
         self.addCleanup(upstream._projects.clear)
 
-    def test_releases_page_or_none(self):
-        answers = {"acme/widget": [{"tag_name": "v1"}], "acme/gizmo": []}
+    FEED = b'<feed xmlns="http://www.w3.org/2005/Atom"><title>Release notes</title>%s</feed>'
 
-        def get(url, headers=None):
-            name = url.split("/repos/")[1].split("/releases")[0]
-            if name not in answers:
+    def fake_feeds(self, feeds):
+        """feeds: "owner/name" -> (where it redirects to or None, number of entries); others 404."""
+        def req(url, headers=None):
+            name = url.split("github.com/")[1].removesuffix("/releases.atom")
+            if name not in feeds:
                 raise HttpError(404, url, {})
-            return answers[name]
-        with mock.patch.object(upstream, "get_json", side_effect=get) as g:
+            moved, entries = feeds[name]
+            body = self.FEED % (b"<entry><title>v1</title></entry>" * entries)
+            return HttpResp(200, {}, body, f"https://github.com/{moved or name}/releases.atom")
+        return mock.patch.object(upstream, "request", side_effect=req)
+
+    def test_releases_page_or_none(self):
+        with self.fake_feeds({"acme/widget": (None, 3), "acme/gizmo": (None, 0)}) as r:
             self.assertEqual(upstream.github_guess("ghcr.io", "acme/widget/controller"), "https://github.com/acme/widget/releases")
-            self.assertIsNone(upstream.github_guess("docker.io", "acme/gizmo"))  # no releases: likely not the project
+            self.assertIsNone(upstream.github_guess("docker.io", "acme/gizmo"))  # published nothing: likely not the project
             self.assertIsNone(upstream.github_guess("quay.io", "acme/nothing"))
             self.assertIsNone(upstream.github_guess("quay.io", "acme/nothing"))  # remembered
-            self.assertEqual(g.call_count, 3)
+            self.assertEqual(r.call_count, 3)
+
+    def test_moved_repo_must_keep_the_images_name(self):
+        feeds = {"acme/widget": ("acme-labs/widget", 2), "acme/pilot": ("acme/old_pilot_repo", 9)}
+        with self.fake_feeds(feeds):
+            self.assertEqual(upstream.github_guess("docker.io", "acme/widget"), "https://github.com/acme-labs/widget/releases")
+            self.assertIsNone(upstream.github_guess("docker.io", "acme/pilot"))
 
     def test_only_names_that_can_be_a_github_repo(self):
-        with mock.patch.object(upstream, "get_json") as g:
+        with mock.patch.object(upstream, "request") as r:
             for host, repo in (("docker.io", "library/widget"), ("ghcr.io", "widget"), ("quay.io", "acme/widget/sub"),
                                ("registry.example", "acme/widget"), ("registry.k8s.io", "widget")):
                 self.assertIsNone(upstream.github_guess(host, repo), (host, repo))
-            g.assert_not_called()
+            r.assert_not_called()
 
     def test_errors_are_not_remembered(self):
-        with mock.patch.object(upstream, "get_json", side_effect=HttpError(403, "x", {})):
+        with mock.patch.object(upstream, "request", side_effect=HttpError(429, "x", {})):
             with self.assertRaises(HttpError):
                 upstream.github_project("acme/widget")
         self.assertNotIn("acme/widget", upstream._projects)

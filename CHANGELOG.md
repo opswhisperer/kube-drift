@@ -19,7 +19,9 @@ git tags and on the GitHub releases page.
   page. An image set to take versions from GitHub links to that repo's releases. An image whose
   labels don't name its project links to a repo its Helm chart lists under the image's name, else
   to the GitHub repo named like it (`ghcr.io/org/app` → `github.com/org/app`; also for Docker Hub,
-  Quay and registry.k8s.io) when that repo has releases, before the registry page.
+  Quay and registry.k8s.io) when that repo has releases or tags, before the registry page. It
+  asks the repo's public releases feed, so it doesn't use up GitHub's 60 anonymous API calls an
+  hour.
 
 ## [0.5.1] - 2026-10-22
 
