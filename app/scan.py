@@ -75,6 +75,7 @@ class Scanner:
         self.labels_file = Path(data_dir) / "image-labels.json" if data_dir else None
         self.label_digests: set[str] = set()
         self.kube_version = ""  # the control plane's, set by inventory()
+        self.chart_links: dict[str, tuple] = {}  # Helm row id -> its chart's source and home links
 
     # ------------------------------------------------------------------ inventory
     def inventory(self) -> list[dict]:
@@ -134,12 +135,19 @@ class Scanner:
                 continue
             ov_key, ov = _find(overrides, f"{r['name']}@{r['namespace']}", r["name"], r["chart"])
             src = ov.get("source") or {"type": "artifacthub-search", "chart": r["chart"]}
+            rid = f"helm/{r['namespace']}/{r['name']}"
+            links = (*r["sources"], r["home"])
+            self.chart_links[rid] = links
+            # Release notes: the configured link, else the GitHub repo versions come from, else the
+            # chart's own source repo, else its home page.
+            ref = (ov.get("ref") or (src.get("type") == "github" and src.get("repo") and f"https://github.com/{src['repo']}/releases")
+                   or upstream.chart_release_page(links) or r["home"] or (r["sources"][0] if r["sources"] else ""))
             out.append({**({"config_key": ov_key} if ov_key else {}),
-                "id": f"helm/{r['namespace']}/{r['name']}", "category": "helm", "install": "helm",
+                "id": rid, "category": "helm", "install": "helm",
                 "name": r["name"], "namespace": r["namespace"],
                 "installed": r["chart_version"], "installed_app": r["app_version"],
                 "image": f"chart {r['chart']}", "track": ov.get("track", "any"),
-                "source": src, "ref": ov.get("ref") or r["home"] or (r["sources"][0] if r["sources"] else ""),
+                "source": src, "ref": ref,
                 "note": f"rev {r['revision']} · {r['updated'][:10]}", "updated": r["updated"],
             })
         return out
@@ -178,6 +186,9 @@ class Scanner:
             # your own registry: one the config names, or one kube-drift has credentials for
             own_registry = host not in upstream.PUBLIC_REGISTRIES and (
                 host in self.cfg.get("registries", {}) or self.reg.has_credentials(host))
+            source = icfg.get("source") or {"type": "registry"}
+            ref = icfg.get("ref") or (source.get("type") == "github" and source.get("repo") and f"https://github.com/{source['repo']}/releases") \
+                or upstream.reference_url(host, repo)
             comp = {
                 "id": f"workload/{ns}/{name}/{repo.split('/')[-1]}",
                 "category": "helm-workload" if helm_release else "manifest",
@@ -188,8 +199,7 @@ class Scanner:
                 "running_digests": sorted(digests.get(_image_key(image), [])),
                 "floating": is_floating(tag), "track": icfg.get("track", "any"),
                 "loose_suffix": icfg.get("loose_suffix", own_registry),
-                "source": icfg.get("source") or {"type": "registry"},
-                "ref": icfg.get("ref") or upstream.reference_url(host, repo), "ref_overridden": bool(icfg.get("ref")),
+                "source": source, "ref": ref, "ref_overridden": bool(icfg.get("ref")),
                 "note": icfg.get("note") or note, "first_party": own_registry,
             }
             if icfg_key:
@@ -276,7 +286,8 @@ class Scanner:
             elif t == "artifacthub":
                 self._resolve_artifacthub(comp, src["repo"], src.get("chart") or comp["image"].removeprefix("chart "))
             elif t == "artifacthub-search":
-                r = upstream.artifacthub_search(src.get("chart") or comp["image"].removeprefix("chart "))
+                r = upstream.artifacthub_search(src.get("chart") or comp["image"].removeprefix("chart "),
+                                                self.chart_links.get(comp["id"], ()), comp.get("installed") or "")
                 if not r:
                     comp.update(status="unknown", latest=None, note=(comp.get("note", "") + " · chart not on ArtifactHub").strip(" ·"))
                 else:
@@ -350,16 +361,25 @@ class Scanner:
         else:
             self._apply_chart(comp, r)
 
-    def _label_ref(self, comp: dict, digest: Optional[str]):
-        """Prefer the link the image's own labels give over the registry's page (see label_link)."""
-        if not digest:
-            return
-        self.label_digests.add(digest)
-        try:
-            link = upstream.label_link(self.reg.labels(comp["image_host"], comp["image_repo"], digest), comp["image_repo"])
-        except Exception as e:  # noqa: BLE001 — a missing link must never fail the row
-            log.info("labels for %s: %s", comp["image"], e)
-            return
+    def _project_ref(self, comp: dict, digest: Optional[str]):
+        """Where to read an image's release notes when the config doesn't say: the link its own
+        labels give (see label_link), else a repo its Helm chart lists and that is named like it,
+        else a GitHub repo named like it (see github_guess), else the registry's page, as set."""
+        host, repo = comp["image_host"], comp["image_repo"]
+        link = None
+        if digest:
+            self.label_digests.add(digest)
+            try:
+                link = upstream.label_link(self.reg.labels(host, repo, digest), repo)
+            except Exception as e:  # noqa: BLE001 — a missing link must never fail the row
+                log.info("labels for %s: %s", comp["image"], e)
+        if not link and comp.get("release"):
+            link = upstream.chart_source_link(self.chart_links.get(comp["release"], ()), repo)
+        if not link:
+            try:
+                link = upstream.github_guess(host, repo)
+            except HttpError as e:
+                log.info("GitHub repo for %s: HTTP %s", comp["image"], e.status)
         if link:
             comp["ref"] = link
 
@@ -395,7 +415,7 @@ class Scanner:
         comp["remote_digest"] = remote
         running = comp.get("running_digests") or ([comp["pinned_digest"]] if comp.get("pinned_digest") else [])
         if not comp.get("ref_overridden"):
-            self._label_ref(comp, (running or [remote])[0])
+            self._project_ref(comp, (running or [remote])[0])
         if remote and running:
             comp["digest_current"] = remote in running
         # 2) newest tag of the same shape (pinned tags only)

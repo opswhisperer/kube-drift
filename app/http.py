@@ -42,6 +42,7 @@ class Resp:
     status: int
     headers: dict
     body: bytes
+    url: str = ""  # where the request ended up, after redirects
 
     def json(self):
         return json.loads(self.body.decode("utf-8") or "null")
@@ -69,7 +70,7 @@ def request(url: str, method: str = "GET", headers: Optional[dict] = None, data:
     for attempt in range(RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-                return Resp(r.status, {k.lower(): v for k, v in r.headers.items()}, r.read())
+                return Resp(r.status, {k.lower(): v for k, v in r.headers.items()}, r.read(), getattr(r, "url", "") or url)
         except urllib.error.HTTPError as e:
             body = e.read() if hasattr(e, "read") else b""
             err = HttpError(e.code, url, {k.lower(): v for k, v in e.headers.items()}, body)

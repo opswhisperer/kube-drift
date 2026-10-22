@@ -196,13 +196,38 @@ def _relates(link: str, repo: str) -> bool:
     return bool(_words(repo.removeprefix("library/")) & _words(link))
 
 
+_REPO_LINK = re.compile(r"(?:git\+)?(?:https?://|git@)(github\.com|gitlab\.com)[/:]([^/\s]+)/([^/\s#?]+)")
+
+
 def _release_page(source: str) -> str:
     """A source repo's releases page on GitHub or GitLab; any other source link as it is."""
-    m = re.match(r"(?:git\+)?(?:https?://|git@)(github\.com|gitlab\.com)[/:]([^/\s]+)/([^/\s#?]+)", source)
+    m = _REPO_LINK.match(source)
     if not m:
         return source
     host, owner, name = m.group(1), m.group(2), m.group(3).removesuffix(".git")
     return f"https://{host}/{owner}/{name}/" + ("releases" if host == "github.com" else "-/releases")
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def chart_release_page(links) -> Optional[str]:
+    """Where to read a chart's release notes: the releases page of the first GitHub or GitLab repo
+    among its links (Chart.yaml's sources, then home)."""
+    return next((_release_page(link) for link in links if link and _REPO_LINK.match(link)), None)
+
+
+def chart_source_link(links, repo: str) -> Optional[str]:
+    """The releases page of a repo the image's Helm chart lists and that is named like the image
+    (the velero chart's github.com/vmware-tanzu/velero for velero/velero). Charts list other repos
+    too, such as their charts monorepo or a dependency, so the name has to match exactly."""
+    name = _norm(repo.split("/")[-1])
+    for link in links:
+        m = _REPO_LINK.match(link or "")
+        if m and _norm(m.group(3).removesuffix(".git")) == name:
+            return _release_page(link)
+    return None
 
 
 def label_link(labels: dict, repo: str) -> Optional[str]:
@@ -467,24 +492,77 @@ def artifacthub_package(repo: str, chart: str) -> Optional[dict]:
     }
 
 
+# Hosts whose first path segment is the publisher's account.
+_ACCOUNT_HOSTS = {"github.com", "gitlab.com", "raw.githubusercontent.com", "ghcr.io", "docker.io",
+                  "registry-1.docker.io", "quay.io"}
+# Second-level domain names that say who hosts a link, not who publishes it.
+_HOSTING = {"github", "gitlab", "githubusercontent", "googleapis", "amazonaws", "cloudfront", "azurecr",
+            "jfrog", "netlify", "vercel", "pages"}
+
+
+def _owners(link: str) -> set[str]:
+    """Who publishes a link, as comparable names: the account in a GitHub, GitLab or registry URL
+    or a *.github.io page, else the site's own name (charts.longhorn.io → longhorn)."""
+    u = urllib.parse.urlparse(link if "://" in link else "https://" + link)
+    host = (u.hostname or "").lower()
+    path = [p for p in u.path.split("/") if p]
+    if host in _ACCOUNT_HOSTS:
+        names = path[:1]
+    elif host.endswith((".github.io", ".gitlab.io")):
+        names = host.split(".")[:1]
+    else:
+        names = host.split(".")[-2:-1]
+    return {_norm(n) for n in names} - {""} - _HOSTING
+
+
+def _publishers(pkg: dict) -> set[str]:
+    repo = pkg.get("repository") or {}
+    return _owners(repo.get("url") or "") | ({_norm(repo["organization_name"])} if repo.get("organization_name") else set())
+
+
 @functools.lru_cache(maxsize=256)
-def artifacthub_search(chart: str) -> Optional[dict]:
-    """Best-effort: find a chart by exact name, preferring official/verified repos."""
-    data = get_json(f"{AH}/api/v1/packages/search?ts_query_web={chart}&kind=0&limit=25&facets=false")
+def artifacthub_search(chart: str, links: tuple = (), installed: str = "") -> Optional[dict]:
+    """Find a chart by exact name. Several repositories often carry a chart of the same name
+    (mirrors, forks, course material), so the candidates are ranked by evidence that one is
+    where the release came from: ArtifactHub marks it official; it's published by whoever the
+    installed chart's own home and source links name (`links`); it isn't older than the
+    installed version; it isn't deprecated; then stars. "Verified publisher" only means the
+    publisher owns their repository, so a one-star mirror has it too: it only breaks ties.
+    `ambiguous` is set when nothing clearly singles the pick out."""
+    from .versions import cmp_versions
+
+    data = get_json(f"{AH}/api/v1/packages/search?ts_query_web={urllib.parse.quote(chart)}&kind=0&limit=25&facets=false")
     cands = [p for p in data.get("packages", []) if p.get("name") == chart]
     if not cands:
         return None
-    cands.sort(key=lambda p: (
-        -int(bool(p.get("official"))), -int(bool((p.get("repository") or {}).get("verified_publisher"))),
-        -int(p.get("stars") or 0)))
+    ours = set().union(*(_owners(link) for link in links if link))
+
+    def official(p: dict) -> bool:
+        return bool(p.get("official") or (p.get("repository") or {}).get("official"))
+
+    def linked(p: dict) -> bool:
+        return bool(ours & _publishers(p))
+
+    def behind(p: dict) -> bool:
+        return bool(installed and p.get("version") and cmp_versions(p["version"], installed) < 0)
+
+    def stars(p: dict) -> int:
+        return int(p.get("stars") or 0)
+
+    cands.sort(key=lambda p: (official(p), linked(p), not behind(p), not p.get("deprecated"), stars(p),
+                              bool((p.get("repository") or {}).get("verified_publisher"))), reverse=True)
     best = cands[0]
+    runner_up = cands[1] if len(cands) > 1 else None
+    sure = (runner_up is None or (official(best) and not official(runner_up))
+            or (linked(best) and not linked(runner_up))
+            or stars(best) >= max(10, 3 * stars(runner_up)))
     repo = (best.get("repository") or {}).get("name", "")
     res = artifacthub_package(repo, chart) or {}
     res.setdefault("version", best.get("version"))
     res.setdefault("app_version", best.get("app_version"))
     res.setdefault("ref", f"{AH}/packages/helm/{repo}/{chart}")
     res["repo"] = repo
-    res["ambiguous"] = len(cands) > 1
+    res["ambiguous"] = not sure
     return res
 
 
@@ -527,6 +605,51 @@ def github_latest(owner_repo: str, version_regex: Optional[str] = None, prefer_t
         m = re.search(version_regex, tag)
         version = m.group(1) if m and m.groups() else (m.group(0) if m else tag)
     return {"version": version, "tag": tag, "ref": f"https://github.com/{owner_repo}/releases"}
+
+
+_projects: dict[str, Optional[str]] = {}  # "owner/name" -> its releases page, or None
+
+
+def github_project(owner_repo: str) -> Optional[str]:
+    """A GitHub repo's releases page, or None when it doesn't exist or has published nothing.
+    Asks the repo's public releases feed rather than the API, so it doesn't spend the 60 anonymous
+    API calls an hour that version lookups need; the feed lists tags when there are no releases.
+    A repo that moved to another owner counts (vmware-tanzu/velero → velero-io/velero); one renamed
+    away from the image's name doesn't (istio/pilot → istio/old_pilot_repo). Remembered for the
+    life of the process, unlike the per-scan caches: that hardly changes."""
+    key = owner_repo.lower()
+    if key in _projects:
+        return _projects[key]
+    try:
+        r = request(f"https://github.com/{owner_repo}/releases.atom", headers={"Accept": "application/atom+xml"})
+    except HttpError as e:
+        if e.status != 404:
+            raise  # rate limited or down: ask again next time
+        link = None
+    else:
+        m = re.match(r"https://github\.com/([^/]+)/([^/]+)/releases\.atom", r.url or "")
+        owner, name = m.groups() if m else owner_repo.split("/", 1)
+        published = b"<entry>" in r.body
+        link = f"https://github.com/{owner}/{name}/releases" \
+            if published and name.lower() == owner_repo.split("/", 1)[1].lower() else None
+    _projects[key] = link
+    return link
+
+
+# Registries where an image's namespace is usually its project's GitHub account (on ghcr.io it is
+# one; on the others it's only likely, so only a plain org/name image is tried).
+_GITHUB_NAMED = {"ghcr.io", "docker.io", "quay.io", "registry.k8s.io"}
+
+
+def github_guess(host: str, repo: str) -> Optional[str]:
+    """The GitHub repo an image is probably built from, named after it: ghcr.io/o/n[/…] → o/n,
+    and o/n on Docker Hub, Quay or registry.k8s.io → o/n. Its releases page, when it has releases."""
+    parts = repo.split("/")
+    if host not in _GITHUB_NAMED or len(parts) < 2 or parts[0] == "library":
+        return None
+    if host != "ghcr.io" and len(parts) != 2:
+        return None
+    return github_project(f"{parts[0]}/{parts[1]}")
 
 
 # ------------------------------------------------------------------------- kubernetes

@@ -2,7 +2,8 @@
 #
 # You don't need any of this to start. With no config, kube-drift finds every Helm release,
 # workload, node and orphaned resource on its own, and guesses where newer versions come from:
-#   - Helm charts: searched for on ArtifactHub by chart name
+#   - Helm charts: searched for on ArtifactHub by chart name. When several repositories carry
+#                  that name, it picks the one the installed chart's own links point to
 #   - images:      newer tags of the same shape in the image's own registry (v1.2.3 → v1.2.4)
 #
 # Add config when the dashboard shows you something wrong or noisy. Each section below starts
@@ -55,8 +56,11 @@ auth:
 # ═════════════════════════════════════════════════════════════════════════ VERSION DRIFT
 
 # ── helm ─────────────────────────────────────────────────────────────────────────────────
-# Symptom: a Helm release shows "unknown", or "Available" is a different chart's version.
+# Symptom: a Helm release shows "unknown", "AH guess: <repo>" names the wrong repository, or
+#          "Available" is a different chart's version.
 # Cause:   the ArtifactHub search by chart name found nothing, or picked the wrong repository.
+#          It ranks repositories carrying that chart name by who the installed chart's home and
+#          source links name, then by stars; "AH guess" means nothing clearly decided it.
 # Fix:     say where the chart is published.
 #
 # Key: the release name. Use "release@namespace" when two releases share a name, or the chart
@@ -68,7 +72,8 @@ auth:
 #              { type: oci, ref: <registry/path/to/chart> }      chart pushed to an OCI registry
 #              { type: github, repo: <owner/name> }              GitHub releases of the project
 #              { type: none }                                    don't look it up
-#   ref:     the link in the Reference column (default: the chart's home page)
+#   ref:     the link in the Reference column. Default: the releases page of the GitHub repo set
+#            as source, else of the chart's own GitHub or GitLab source repo, else its home page
 #   track:   major | minor — only offer upgrades within the installed major (or minor) version;
 #            the newest overall still shows as "newer track". Default: any.
 helm:
@@ -92,9 +97,15 @@ helm:
 #   track:   major | minor, as for helm
 #   source:  { type: none } to stop looking up newer tags
 #   name:    show this instead of the workload's name
-#   ref:     the link in the Reference column. Default: the image's own OCI labels (source repo's
-#            releases page, else documentation, else url) when they name the image's project;
-#            else its registry page on Docker Hub, GHCR, Quay, ECR Public, registry.k8s.io, lscr.io
+#   ref:     the link in the Reference column. Default, the first of:
+#              - with source { type: github }, that repo's releases page
+#              - the image's own OCI labels (source repo's releases page, else documentation,
+#                else url) when they name the image's project
+#              - a GitHub or GitLab repo the image's Helm chart lists, named like the image
+#              - the GitHub repo named like the image, if it has releases or tags:
+#                ghcr.io/org/app[/…] and org/app on Docker Hub, Quay or registry.k8s.io
+#                → github.com/org/app/releases
+#              - its registry page on Docker Hub, GHCR, Quay, ECR Public, registry.k8s.io, lscr.io
 #   note:    text shown under the name
 #   loose_suffix: true if every build gets a new suffix (1.4.2-a1b2c3-r1), so tags are compared
 #            by their version part only. On by default for images from your own registries: ones

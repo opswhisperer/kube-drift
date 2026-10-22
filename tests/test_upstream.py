@@ -7,6 +7,7 @@ from unittest import mock
 
 from app import upstream
 from app.http import HttpError
+from app.http import Resp as HttpResp
 from app.upstream import Registry, label_link, reference_url
 
 CHALLENGE = {"www-authenticate": 'Bearer realm="https://reg.example/token",service="reg.example",scope="aws"'}
@@ -292,6 +293,132 @@ class LabelLink(unittest.TestCase):
         self.assertEqual(label_link({"url": "https://widget.example/"}, "acme/widget"), "https://widget.example/")
         self.assertIsNone(label_link({"source": "not a link widget"}, "acme/widget"))
         self.assertIsNone(label_link({}, "acme/widget"))
+
+
+def ah_pkg(repo, stars=0, version="1.0.0", url="", verified=False, official=False, deprecated=False, org=None):
+    return {"name": "widget", "version": version, "stars": stars, "official": official, "deprecated": deprecated,
+            "repository": {"name": repo, "url": url, "verified_publisher": verified, "organization_name": org}}
+
+
+class ArtifactHubSearch(unittest.TestCase):
+    """Several repositories carry a chart of the same name; pick the one the release came from."""
+
+    def setUp(self):
+        upstream.artifacthub_search.cache_clear()
+        self.addCleanup(upstream.artifacthub_search.cache_clear)
+
+    def search(self, pkgs, links=(), installed=""):
+        upstream.artifacthub_search.cache_clear()
+        with mock.patch.object(upstream, "get_json", return_value={"packages": pkgs}), \
+             mock.patch.object(upstream, "artifacthub_package", return_value=None):
+            return upstream.artifacthub_search("widget", links, installed)
+
+    def test_verified_mirror_does_not_beat_the_popular_repo(self):
+        r = self.search([ah_pkg("mirrorco", stars=1, verified=True, url="https://mirrorco.example/charts"),
+                         ah_pkg("widget", stars=200, url="https://charts.widget.example")])
+        self.assertEqual(r["repo"], "widget")
+        self.assertFalse(r["ambiguous"])
+
+    def test_the_charts_own_links_name_the_publisher(self):
+        # Installed from the less popular repo: its Chart.yaml links point at that publisher.
+        pkgs = [ah_pkg("widget", stars=200, url="https://widget.github.io/helm-charts"),
+                ah_pkg("bundleco", stars=9, url="https://charts.bundleco.example/bundleco")]
+        r = self.search(pkgs, links=("https://github.com/bundleco/charts/tree/main/widget",))
+        self.assertEqual(r["repo"], "bundleco")
+        self.assertFalse(r["ambiguous"])
+        r = self.search(pkgs, links=("https://github.com/widget/widget", "https://widget.example/"))
+        self.assertEqual(r["repo"], "widget")
+
+    def test_publisher_from_site_name_or_org(self):
+        pkgs = [ah_pkg("other", stars=50, url="https://other.github.io/charts"),
+                ah_pkg("widget-charts", stars=3, url="https://charts.widget.example")]
+        self.assertEqual(self.search(pkgs, links=("https://github.com/widget/widget",))["repo"], "widget-charts")
+        pkgs = [ah_pkg("other", stars=50, url="https://other.github.io/charts"),
+                ah_pkg("acme-widget", stars=3, url="oci://reg.example/charts", org="acme")]
+        self.assertEqual(self.search(pkgs, links=("https://github.com/acme/widget",))["repo"], "acme-widget")
+
+    def test_hosting_sites_name_nobody(self):
+        pkgs = [ah_pkg("other", stars=50, url="https://other.github.io/charts"),
+                ah_pkg("bucket", stars=3, url="https://storage.googleapis.com/charts")]
+        self.assertEqual(self.search(pkgs, links=("https://storage.googleapis.com/widget",))["repo"], "other")
+
+    def test_a_repo_older_than_the_installed_chart_is_not_its_source(self):
+        r = self.search([ah_pkg("stale", stars=40, version="1.5.1"), ah_pkg("widget", stars=30, version="1.13.0")],
+                        installed="1.12.0")
+        self.assertEqual(r["repo"], "widget")
+
+    def test_official_wins_and_deprecated_loses(self):
+        r = self.search([ah_pkg("popular", stars=500), ah_pkg("widget", stars=5, official=True)])
+        self.assertEqual((r["repo"], r["ambiguous"]), ("widget", False))
+        r = self.search([ah_pkg("old", stars=500, deprecated=True), ah_pkg("widget", stars=5)])
+        self.assertEqual(r["repo"], "widget")
+
+    def test_ambiguous_only_without_clear_evidence(self):
+        self.assertTrue(self.search([ah_pkg("a", stars=6), ah_pkg("b", stars=4)])["ambiguous"])
+        self.assertTrue(self.search([ah_pkg("a", stars=3), ah_pkg("b", stars=0)])["ambiguous"])  # too few stars to say
+        self.assertFalse(self.search([ah_pkg("a", stars=12), ah_pkg("b", stars=4)])["ambiguous"])
+        self.assertFalse(self.search([ah_pkg("a")])["ambiguous"])
+        self.assertIsNone(self.search([]))
+
+
+class ChartLinks(unittest.TestCase):
+    def test_release_page_from_first_repo_link(self):
+        links = ("https://widget.example/", "https://github.com/acme/widget", "https://github.com/acme/other")
+        self.assertEqual(upstream.chart_release_page(links), "https://github.com/acme/widget/releases")
+        self.assertIsNone(upstream.chart_release_page(("https://widget.example/", "")))
+
+    def test_source_link_must_be_named_like_the_image(self):
+        links = ("https://github.com/acme/helm-charts", "https://github.com/acme-labs/widget", "")
+        self.assertEqual(upstream.chart_source_link(links, "widget/widget"), "https://github.com/acme-labs/widget/releases")
+        self.assertEqual(upstream.chart_source_link(links, "acme/Widget"), "https://github.com/acme-labs/widget/releases")
+        self.assertIsNone(upstream.chart_source_link(links, "acme/widget-exporter"))
+        self.assertIsNone(upstream.chart_source_link(("https://widget.example/",), "acme/widget"))
+
+
+class GithubGuess(unittest.TestCase):
+    def setUp(self):
+        upstream._projects.clear()
+        self.addCleanup(upstream._projects.clear)
+
+    FEED = b'<feed xmlns="http://www.w3.org/2005/Atom"><title>Release notes</title>%s</feed>'
+
+    def fake_feeds(self, feeds):
+        """feeds: "owner/name" -> (where it redirects to or None, number of entries); others 404."""
+        def req(url, headers=None):
+            name = url.split("github.com/")[1].removesuffix("/releases.atom")
+            if name not in feeds:
+                raise HttpError(404, url, {})
+            moved, entries = feeds[name]
+            body = self.FEED % (b"<entry><title>v1</title></entry>" * entries)
+            return HttpResp(200, {}, body, f"https://github.com/{moved or name}/releases.atom")
+        return mock.patch.object(upstream, "request", side_effect=req)
+
+    def test_releases_page_or_none(self):
+        with self.fake_feeds({"acme/widget": (None, 3), "acme/gizmo": (None, 0)}) as r:
+            self.assertEqual(upstream.github_guess("ghcr.io", "acme/widget/controller"), "https://github.com/acme/widget/releases")
+            self.assertIsNone(upstream.github_guess("docker.io", "acme/gizmo"))  # published nothing: likely not the project
+            self.assertIsNone(upstream.github_guess("quay.io", "acme/nothing"))
+            self.assertIsNone(upstream.github_guess("quay.io", "acme/nothing"))  # remembered
+            self.assertEqual(r.call_count, 3)
+
+    def test_moved_repo_must_keep_the_images_name(self):
+        feeds = {"acme/widget": ("acme-labs/widget", 2), "acme/pilot": ("acme/old_pilot_repo", 9)}
+        with self.fake_feeds(feeds):
+            self.assertEqual(upstream.github_guess("docker.io", "acme/widget"), "https://github.com/acme-labs/widget/releases")
+            self.assertIsNone(upstream.github_guess("docker.io", "acme/pilot"))
+
+    def test_only_names_that_can_be_a_github_repo(self):
+        with mock.patch.object(upstream, "request") as r:
+            for host, repo in (("docker.io", "library/widget"), ("ghcr.io", "widget"), ("quay.io", "acme/widget/sub"),
+                               ("registry.example", "acme/widget"), ("registry.k8s.io", "widget")):
+                self.assertIsNone(upstream.github_guess(host, repo), (host, repo))
+            r.assert_not_called()
+
+    def test_errors_are_not_remembered(self):
+        with mock.patch.object(upstream, "request", side_effect=HttpError(429, "x", {})):
+            with self.assertRaises(HttpError):
+                upstream.github_project("acme/widget")
+        self.assertNotIn("acme/widget", upstream._projects)
 
 
 class Labels(unittest.TestCase):
