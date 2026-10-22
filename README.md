@@ -58,6 +58,15 @@ registry. Add a config file when the dashboard shows you something wrong or nois
 [`config/example.yaml`](config/example.yaml) explains each key with examples. Copy it, keep what
 you need.
 
+The dashboard's **Config** tab shows the config kube-drift is running with. Values that look
+secret, probe headers and passwords in URLs show as `(hidden)`. The tab also lists which rows
+each `images:` and `helm:` rule matched in the last scan. Image and Helm rules can be added or
+overridden there too: press **Configure…** on a row in Version drift, or **Add** in the tab.
+Those rules are kept on kube-drift's volume (`overrides.json`). Each one replaces the config
+file's entry for the same key until you revert it, and saving one starts a version rescan.
+**Copy YAML** gives you them in config-file form, so you can move them into git. Everything else
+(sign-in, probes, registries, ignores, orphans) is only changed in the config file.
+
 ### Applying your config
 
 The config is a file called `config.yaml` that Kustomize turns into the ConfigMap kube-drift
@@ -320,6 +329,10 @@ secret data and are written with mode 600. A PVC or PV backup is the manifest, n
   keep kor out of Secrets; the Helm scan still reads them.
 - The dashboard and API never return Secret data — only names.
 - Runs as non-root with a read-only root filesystem and no capabilities.
+- Image and Helm rules made in the dashboard can point version lookups at any OCI registry or
+  GitHub repository. Anyone who can use the dashboard can make them, so they get the same
+  protection as ignores. Settings that make kube-drift send credentials or headers (sign-in,
+  probes, registries) can't be changed from the dashboard.
 - POST endpoints change only kube-drift's own state (including API keys), and accept
   `application/json` only, so a cross-site form can't reach them.
 
@@ -369,11 +382,12 @@ KUBE_API=http://127.0.0.1:8001 CONFIG=config/example.yaml DATA_DIR=/tmp/kube-dri
 ```
 
 ```
-app/main.py      HTTP server, scan schedulers, ignore/rule/command endpoints
+app/main.py      HTTP server, scan schedulers, ignore/rule/command/config endpoints
 app/scan.py      version scan: inventory → components → upstream versions
 app/orphans.py   orphan scan: kor, evidence, ignore rules, cleanup scripts
 app/upstream.py  registries (Docker Hub, ghcr, quay, generic v2), ArtifactHub, GitHub
 app/k8s.py       minimal Kubernetes API client, Helm release decoding
+app/overrides.py image and Helm rules made in the dashboard, the redacted config view
 app/store.py     ignores and rules on the data volume
 app/static/      the dashboard (one HTML file, no build step)
 config/          example.yaml — every config key

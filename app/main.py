@@ -32,7 +32,7 @@ from pathlib import Path
 
 import yaml
 
-from . import auth, orphans
+from . import auth, orphans, overrides
 from .openapi import SPEC
 from .k8s import K8s
 from .scan import Scanner, apply_ignores, kube_version, now_iso
@@ -46,6 +46,7 @@ STATIC = HERE / "static"
 STATE_FILE = Path(os.environ.get("STATE_FILE", "/tmp/drift.json"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CLUSTER = {"name": os.environ.get("CLUSTER_NAME", "")}  # set from config in main()
+CONFIG: dict = {}  # the config file as loaded, set in main(); dashboard image/Helm rules go on top (overrides.py)
 VERSION = os.environ.get("KUBE_DRIFT_VERSION") or "dev"  # baked into the image at build time (Dockerfile)
 MAX_BODY = 1 << 20
 # Swagger UI for /docs: bundled into the image (Dockerfile); from source, the same version on a CDN.
@@ -178,7 +179,7 @@ def scan_loop(cfg: dict):
         with STATE.lock:
             STATE.scanning = True
         try:
-            scanner = Scanner(K8s(), cfg, DATA_DIR)
+            scanner = Scanner(K8s(), overrides.effective(cfg, ORPHANS.store.config_rules()), DATA_DIR)
             result = scanner.run()
             with STATE.lock:
                 STATE.result, STATE.last_error = result, None
@@ -373,6 +374,13 @@ class Handler(BaseHTTPRequestHandler):
                        {"Content-Disposition": "attachment; filename=kube-drift.csv"})
         elif path == "/api/orphans":
             self._send(200, json.dumps(ORPHANS.snapshot()).encode())
+        elif path == "/api/config":
+            with STATE.lock:
+                comps = list((STATE.result or {}).get("components", []))
+            env = {k: os.environ[k] for k in ("CLUSTER_NAME", "SCAN_INTERVAL_HOURS") if os.environ.get(k)}
+            self._json(200, {**overrides.view(CONFIG, ORPHANS.store.config_rules(), comps),
+                             "file": os.environ.get("CONFIG", "/config/config.yaml"), "env": env,
+                             "editable": ORPHANS.store.writable, "cluster": CLUSTER["name"], "version": VERSION})
         elif path == "/api/keys":
             if self._keys_allowed():
                 self._json(200, {"keys": AUTH.keys.list()})
@@ -422,6 +430,7 @@ class Handler(BaseHTTPRequestHandler):
                    "/api/orphans/commands": self._commands,
                    "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule,
                    "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates,
+                   "/api/config/rules": self._set_config_rule, "/api/config/rules/delete": self._remove_config_rule,
                    "/api/keys": self._create_key, "/api/keys/delete": self._revoke_key}
         if path not in actions:
             self._send(404, b'{"error":"not found"}')
@@ -545,6 +554,41 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(200, {"unignored": ORPHANS.store.unignore_updates(body["ids"])})
 
+    # ----- image and Helm rules (kube-drift's own state, laid over the config file) -----
+    def _actor(self) -> str:
+        who = self.who or {}
+        if who.get("via") == "api-key":
+            return f"API key {(who.get('key') or {}).get('name', '')}".strip()
+        user = who.get("user") or {}
+        return user.get("email") or user.get("name") or user.get("sub") or ""
+
+    def _set_config_rule(self, body: dict):
+        if not ORPHANS.store.writable:
+            self._json(503, {"error": f"{ORPHANS.store.root} is not writable"})
+            return
+        try:
+            section = body.get("section")
+            key = overrides.validate_key(section, body.get("key"))
+            rule = overrides.validate_rule(section, body.get("rule") or {})
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        entry = ORPHANS.store.set_config_rule(section, key, rule, self._actor())
+        log.info("%s rule %s set by %s: %s", section, key, entry["by"] or "dashboard", rule)
+        STATE.wake.set()  # rescan versions with it; a scan running now is followed by another
+        self._json(200, {"section": section, "key": key, **entry})
+
+    def _remove_config_rule(self, body: dict):
+        if not ORPHANS.store.writable:
+            self._json(503, {"error": f"{ORPHANS.store.root} is not writable"})
+            return
+        section, key = str(body.get("section") or ""), str(body.get("key") or "")
+        ok = ORPHANS.store.remove_config_rule(section, key)
+        if ok:
+            log.info("%s rule %s removed by %s", section, key, self._actor() or "dashboard")
+            STATE.wake.set()
+        self._json(200 if ok else 404, {"removed": ok})
+
     def _commands(self, body: dict):
         """kubectl script to export, or back up and delete, the given scanned items."""
         found = ORPHANS.find(body["ids"])
@@ -579,6 +623,7 @@ def to_csv(snap: dict) -> str:
 def main():
     global AUTH
     cfg = load_config()
+    CONFIG.update(cfg)
     AUTH = auth.from_config(cfg, DATA_DIR)  # a broken auth config stops startup rather than run open
     CLUSTER["name"] = os.environ.get("CLUSTER_NAME") or str(cfg.get("cluster_name") or "")
     threading.Thread(target=scan_loop, args=(cfg,), daemon=True, name="scan").start()

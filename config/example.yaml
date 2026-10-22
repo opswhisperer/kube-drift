@@ -61,6 +61,7 @@ auth:
 #
 # Key: the release name. Use "release@namespace" when two releases share a name, or the chart
 # name to cover every release of that chart.
+# You can also set these in the dashboard: Configure… on a release, or the Config tab.
 #
 #   source:  where to look for newer chart versions — one of
 #              { type: artifacthub, repo: <ArtifactHub repo>, chart: <chart> }
@@ -86,6 +87,7 @@ helm:
 #
 # Key: the image without its tag — "host/path" ("ghcr.io/org/app"), just the path for Docker Hub
 # ("mongo", "grafana/grafana"), or "re:<regex>" to cover many images at once.
+# You can also set these in the dashboard: Configure… on a row, or the Config tab.
 #
 #   track:   major | minor, as for helm
 #   source:  { type: none } to stop looking up newer tags

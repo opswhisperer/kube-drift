@@ -35,7 +35,7 @@ SPEC: dict = {
             "- **Orphaned resources** (`GET /api/orphans`): objects nothing uses, found by kor and "
             "cross-checked, with ignore state applied.\n\n"
             "The API never changes the cluster. POST endpoints only change kube-drift's own state "
-            "(ignores, ignore rules, rescans, API keys) or return text: `/api/orphans/commands` returns a kubectl "
+            "(ignores, ignore rules, image and Helm rules, rescans, API keys) or return text: `/api/orphans/commands` returns a kubectl "
             "script for a human to review and run. Responses never contain Secret data.\n\n"
             "**Authentication** depends on how kube-drift is deployed:\n\n"
             "- **Built-in sign-in** (`auth.oidc` in its config; `GET /auth/me` says `\"auth\": \"oidc\"`): send an "
@@ -54,6 +54,7 @@ SPEC: dict = {
     "tags": [
         {"name": "versions", "description": "Installed vs available versions."},
         {"name": "orphans", "description": "Unused resources, ignores and cleanup scripts."},
+        {"name": "config", "description": "The config in effect, and image and Helm rules kept by kube-drift."},
         {"name": "service", "description": "Scans, health and this document."},
         {"name": "auth", "description": "Sign-in and API keys; only when built-in sign-in (`auth.oidc`) is on."},
     ],
@@ -176,6 +177,48 @@ SPEC: dict = {
                     "skipped": {"type": "array", "items": {"type": "object", "properties": {
                         "id": {"type": "string"}, "why": {"type": "string"}}}}}}}}},
                 "400": _ERROR, "415": _ERROR},
+        }},
+        "/api/config": {"get": {
+            "tags": ["config"], "operationId": "getConfig",
+            "summary": "The config in effect: image and Helm rules, and everything else as read",
+            "description": (
+                "`images` and `helm` list the rules the version scan uses: the config file's, and the ones "
+                "added through the dashboard or API (`from: dashboard`), which replace the file's entry for the "
+                "same key. `components` are the ids that used each rule in the last scan. `settings` is the rest "
+                "of the config file, read-only here. Values that look secret, probe headers and credentials in "
+                "URLs are replaced with `(hidden)`; env var names are shown."),
+            "responses": {"200": _json("Config")},
+        }},
+        "/api/config/rules": {"post": {
+            "tags": ["config"], "operationId": "setConfigRule",
+            "summary": "Add or replace an image or Helm rule",
+            "description": (
+                "Kept on kube-drift's volume and laid over the config file: for a key the file also has, it "
+                "replaces that entry whole. Starts a version rescan (after the one running, if any). "
+                "`dashboard_yaml` in `GET /api/config` has these rules as YAML to move into the config file."),
+            "requestBody": _body({"type": "object", "required": ["section", "key", "rule"], "properties": {
+                "section": {"enum": ["images", "helm"]},
+                "key": {"type": "string", "maxLength": 300, "description": (
+                    "images: the image without its tag (`ghcr.io/org/app`; `mongo` or `grafana/grafana` for Docker Hub). "
+                    "helm: the release name, `release@namespace`, or the chart name. Either: `re:<regex>` to cover many.")},
+                "rule": {"$ref": "#/components/schemas/ConfigRuleBody"}}}),
+            "responses": {
+                "200": {"description": "Saved", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "section": {"enum": ["images", "helm"]}, "key": {"type": "string"},
+                    "rule": {"$ref": "#/components/schemas/ConfigRuleBody"},
+                    "at": {"type": "string", "format": "date-time"}, "by": {"type": "string"}}}}}},
+                "400": _ERROR, "415": _ERROR, "503": _ERROR},
+        }},
+        "/api/config/rules/delete": {"post": {
+            "tags": ["config"], "operationId": "removeConfigRule",
+            "summary": "Remove an image or Helm rule added through the dashboard or API",
+            "description": "The config file's entry for that key, if any, applies again. Config-file rules can't be removed here. Starts a version rescan.",
+            "requestBody": _body({"type": "object", "required": ["section", "key"], "properties": {
+                "section": {"enum": ["images", "helm"]}, "key": {"type": "string"}}}),
+            "responses": {
+                "200": {"description": "Removed", "content": {"application/json": {"schema": {"type": "object", "properties": {"removed": {"const": True}}}}}},
+                "404": {"description": "No dashboard rule with that key", "content": {"application/json": {"schema": {"type": "object", "properties": {"removed": {"const": False}}}}}},
+                "415": _ERROR, "503": _ERROR},
         }},
         "/api/rescan": {"post": {
             "tags": ["service"], "operationId": "rescan",
@@ -343,7 +386,8 @@ SPEC: dict = {
             "note": {"type": "string"}, "error": {"type": "string"}, "probe_error": {"type": "string"}, "digest_error": {"type": "string"},
             "source": {"type": "object", "description": "Where the available version came from (see config)."},
             "probe_source": {"type": ["object", "null"]}, "first_party": {"type": "boolean"}, "loose_suffix": {"type": "boolean"},
-            "ref_overridden": {"type": "boolean", "description": "ref was set in config or by a probe, not discovered."}, "updated": {"type": "string"}, "checked_at": {"type": "string", "format": "date-time"},
+            "ref_overridden": {"type": "boolean", "description": "ref was set in config or by a probe, not discovered."},
+            "config_key": {"type": "string", "description": "The `images` or `helm` rule it matched (`GET /api/config`); absent when none did."}, "updated": {"type": "string"}, "checked_at": {"type": "string", "format": "date-time"},
         }},
         "UpdateIgnored": {"type": "object", "description": "Present only while the component's update is ignored. "
                           "It ends at the first condition met; ended ignores are removed.", "properties": {
@@ -355,6 +399,40 @@ SPEC: dict = {
             "until_newer": {"type": "boolean", "description": "Ends when something newer than `latest` is available."},
             "via": {"type": "string", "description": "Helm-managed workload: ignored because its release (this id) is."},
             "note": {"type": "string"}, "at": {"type": "string", "format": "date-time"},
+        }},
+        "ConfigRuleBody": {"type": "object", "description": "An `images` or `helm` entry, as in the config file. Fields left out take the default.", "properties": {
+            "track": {"enum": ["any", "major", "minor"], "description": "Only offer upgrades within the installed major (or minor) version."},
+            "source": {"type": "object", "description": (
+                "Where newer versions come from; leave out for the default (images: the registry's tags; helm: an "
+                "ArtifactHub search by chart name). images: `{type: none}` or `{type: github, repo, version_regex?, prefer_tags?}`. "
+                "helm: also `{type: artifacthub, repo, chart?}` and `{type: oci, ref}`."),
+                "properties": {"type": {"enum": ["none", "github", "artifacthub", "oci"]}, "repo": {"type": "string"},
+                               "chart": {"type": "string"}, "ref": {"type": "string"}, "version_regex": {"type": "string"},
+                               "prefer_tags": {"type": "boolean"}}},
+            "ref": {"type": "string", "format": "uri", "description": "http(s) link for the Release notes column."},
+            "name": {"type": "string", "description": "images: shown instead of the workload's name."},
+            "note": {"type": "string", "description": "images: shown under the name."},
+            "loose_suffix": {"type": "boolean", "description": "images: compare tags by their version part only (1.4.2-a1b2c3-r1)."},
+        }},
+        "ConfigRule": {"type": "object", "properties": {
+            "key": {"type": "string"},
+            "from": {"enum": ["config", "dashboard"]},
+            "rule": {"type": "object", "description": "The entry in effect (ConfigRuleBody; a config-file entry may carry more)."},
+            "replaces": {"type": "object", "description": "Dashboard rule: the config file's entry for the same key, which it replaces."},
+            "components": {"type": "array", "items": {"type": "string"}, "description": "Component ids that used it in the last scan."},
+            "at": {"type": ["string", "null"], "format": "date-time"},
+            "by": {"type": ["string", "null"], "description": "Who saved it, when sign-in is on."},
+        }},
+        "Config": {"type": "object", "properties": {
+            "images": {"type": "array", "items": {"$ref": "#/components/schemas/ConfigRule"}},
+            "helm": {"type": "array", "items": {"$ref": "#/components/schemas/ConfigRule"}},
+            "settings": {"type": "object", "description": "The rest of the config file (auth, probes, registries, ignore, orphans…), redacted."},
+            "settings_yaml": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each of `settings` as YAML."},
+            "dashboard_yaml": {"type": "string", "description": "The dashboard rules as `images:`/`helm:` YAML for the config file; empty when there are none."},
+            "file": {"type": "string", "description": "Where kube-drift reads its config file."},
+            "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Env vars set that override the file (CLUSTER_NAME, SCAN_INTERVAL_HOURS)."},
+            "editable": {"type": "boolean", "description": "False when kube-drift can't save rules."},
+            "cluster": {"type": "string"}, "version": {"type": "string"},
         }},
         "OrphanScan": {"allOf": [{"$ref": "#/components/schemas/ScanState"}, {"type": "object", "properties": {
             "format": {"type": "integer", "description": "Shape version of the scan result."},

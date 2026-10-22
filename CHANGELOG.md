@@ -6,6 +6,17 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- A **Config** tab in the dashboard that shows the config kube-drift is running with, secrets
+  hidden. Each `images:` and `helm:` rule lists the rows it matched in the last scan.
+- Image and Helm rules can be added and overridden in the dashboard, from the Config tab or with
+  **Configure…** on a version row: track, where newer versions come from, the release-notes link,
+  and for images the display name, note and `loose_suffix`. They're kept on kube-drift's volume,
+  replace the config file's entry for the same key, start a rescan, and can be copied out as YAML
+  for the config file. In the API: `GET /api/config`, `POST /api/config/rules` and
+  `POST /api/config/rules/delete`, plus `config_key` on each component.
+
 ## [0.5.0] - 2026-10-21
 
 ### Added

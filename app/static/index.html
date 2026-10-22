@@ -53,8 +53,8 @@ button.link{border:0;background:none;padding:0 2px;color:var(--accent);font-size
 main{padding:18px 24px 40px;max-width:1400px;margin:0 auto}
 
 /* tabs */
-.tabs{display:flex;gap:2px;margin:0 0 22px;border-bottom:1px solid var(--line)}
-.tab{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 12px 9px;color:var(--muted);font-weight:600}
+.tabs{display:flex;gap:2px;margin:0 0 22px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tab{white-space:nowrap;background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 12px 9px;color:var(--muted);font-weight:600}
 .tab.on{color:var(--ink);border-bottom-color:var(--ink)}
 .tab .cnt{display:inline-block;margin-left:7px;padding:0 7px;border-radius:999px;background:var(--unk-bg);color:var(--unk);font-size:12px;font-weight:600}
 .tab .cnt.hot{background:var(--minor-bg);color:var(--minor)}
@@ -156,6 +156,26 @@ button.danger:hover,button.danger:focus-visible{color:var(--major);border-color:
 .ev .in-use .tag{color:var(--ok)} .ev .recreated .tag{color:var(--accent)} .ev .leftover .tag{color:var(--minor)} .ev .protected .tag{color:var(--unk)}
 .kor{display:flex;gap:10px}
 
+/* config */
+.intro{margin:0 0 6px;color:var(--muted);max-width:60em}
+h2.ch{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;font-size:15px;margin:26px 0 4px}
+h2.ch button{font-size:12.5px;padding:3px 10px;font-weight:500}
+h2.ch + .hint{margin:0 0 10px;max-width:60em}
+.ckey{font-family:var(--mono);font-size:12.5px;font-weight:600;overflow-wrap:anywhere}
+.from{display:inline-block;padding:0 7px;border-radius:5px;font-size:12px;font-weight:600;background:var(--unk-bg);color:var(--unk)}
+.from.dash{background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--accent)}
+.cset{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));gap:12px}
+.cset section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.cset h3{margin:0 0 6px;font-size:13px} .cset h3 code{color:var(--muted);font-weight:400;margin-left:6px}
+pre.cfg{margin:0;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.cform{display:grid;gap:10px}
+.cform label{display:grid;gap:4px;font-size:12.5px;color:var(--muted)}
+.cform label > .hint{font-size:12px}
+.cform select{width:100%}
+.cform [hidden]{display:none!important}
+.cform .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:520px){ .cform .pair{grid-template-columns:1fr} }
+
 /* dialog, toast */
 dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,calc(100vw - 32px));box-shadow:0 24px 64px rgba(0,0,0,.28)}
 dialog::backdrop{background:rgba(8,12,16,.5)}
@@ -172,7 +192,7 @@ dialog ul.list{margin:6px 0;padding-left:18px;font-family:var(--mono);font-size:
 .newkey{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px} .newkey input{flex:1 1 12em;min-width:0}
 dialog pre.script{margin:8px 0 0;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 dialog .warn{background:var(--minor-bg);color:var(--minor);padding:8px 10px;border-radius:8px;margin:8px 0;font-size:12.5px}
-dialog input[type=text],dialog textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 10px;border-radius:8px;font:inherit}
+dialog input[type=text],dialog input[type=url],dialog textarea{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 10px;border-radius:8px;font:inherit}
 dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 .toast{position:fixed;right:16px;bottom:16px;max-width:min(440px,calc(100vw - 32px));background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:10px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.25);z-index:10}
 .toast[hidden]{display:none}
@@ -209,7 +229,8 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 <main>
   <nav class="tabs" role="tablist">
     <button class="tab on" data-view="versions" role="tab" aria-selected="true">Version drift <span class="cnt" id="cnt-versions"></span></button>
-    <button class="tab" data-view="orphans" role="tab" aria-selected="false">Orphaned resources <span class="cnt" id="cnt-orphans"></span></button>
+    <button class="tab" data-view="orphans" role="tab" aria-selected="false">Orphaned<span class="hide-sm"> resources</span> <span class="cnt" id="cnt-orphans"></span></button>
+    <button class="tab" data-view="config" role="tab" aria-selected="false">Config</button>
   </nav>
   <section id="v-versions">
   <div class="strip" id="strip"></div>
@@ -286,6 +307,8 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
   </table>
   </div>
   </section>
+
+  <section id="v-config" hidden><div id="c-body"><p class="hint">Loading the config…</p></div></section>
 </main>
 
 <dialog id="dlg"><form method="dialog" id="dlg-form">
@@ -395,7 +418,7 @@ function strip(el, {headline, headOn, headKey, parts, segs, active, attr}){
 function render(){
   const d=state.data; if(!d) return;
   showCluster(d.cluster); showVersion(d.version);
-  if(ost.view==='versions') setMeta(d,'scan','Scanning');
+  if(ost.view!=='orphans') setMeta(d,'scan','Scanning');
   // An update the cluster can't install (c.incompatible says why) is hidden unless asked for.
   // So is one you ignored for a while (c.ignored), until its ignore ends.
   const inc=(d.components||[]).filter(c=>c.incompatible).length, ign=(d.components||[]).filter(c=>c.ignored&&!c.release).length;
@@ -450,12 +473,14 @@ function render(){
       <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
-    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
     const canIgn=d.ignore_enabled && !c.release && (c.ignored || c.status==='outdated' || c.images_outdated);
-    const acts=!canIgn?'':`<div class="dacts">${c.ignored?`<button data-unign="${esc(c.id)}">Stop ignoring</button>`:`<button data-ign="${esc(c.id)}">Ignore this update…</button>`}</div>`;
+    const canCfg=d.ignore_enabled && !!ruleKey(c);
+    const acts=!canIgn&&!canCfg?'':`<div class="dacts">${!canIgn?'':c.ignored?`<button data-unign="${esc(c.id)}">Stop ignoring</button>`:`<button data-ign="${esc(c.id)}">Ignore this update…</button>`}`+
+      (canCfg?`<button data-cfg="${esc(c.id)}" title="Set its track, where newer versions come from, its link…">Configure…</button>`:'')+'</div>';
     return row+`<tr class="detail"><td colspan="4"><dl>${dl}</dl>${acts}</td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
   };
   $('#rows').innerHTML = !rows.length? `<tr><td colspan="4" class="empty">${d.scanned_at?'Nothing matches these filters.':'Waiting for the first scan.'}</td></tr>`
@@ -484,7 +509,7 @@ function groupRows(rows){
 // Built-in sign-in (auth.oidc): an expired session makes the API answer 401; sign in again and come back.
 function signIn(){ location.href='/auth/login?next='+encodeURIComponent(location.pathname+location.hash); }
 async function get(path){ const r=await fetch(path,{cache:'no-store'}); if(r.status===401){ signIn(); throw new Error('signed out'); } return r.json(); }
-async function load(){ try{ state.data=await get('/api/drift'); render(); }catch(e){ $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
+async function load(){ try{ state.data=await get('/api/drift'); render(); if(ost.view==='config') renderC(); }catch(e){ $('#meta').textContent='Cannot reach the kube-drift API: '+e; } }
 // Rows and group headers are focusable: Enter or Space toggles them like a click.
 document.addEventListener('keydown',e=>{
   if((e.key==='Enter'||e.key===' ') && e.target.matches('tr.row,tr.grp')){ e.preventDefault(); e.target.click(); }
@@ -497,6 +522,7 @@ document.addEventListener('click',e=>{
   const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); refocus(`th[data-k="${th.dataset.k}"] button`); return; }
   const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); refocus(`tr.grp[data-g="${CSS.escape(g)}"]`); return; }
   const ib=e.target.closest('[data-ign]'); if(ib){ ignoreUpdate(ib.dataset.ign).catch(err=>toast('Ignore failed: '+esc(err.message))); return; }
+  const cb=e.target.closest('[data-cfg]'); if(cb){ run(()=>configure(cb.dataset.cfg)); return; }
   const ub=e.target.closest('[data-unign]'); if(ub){ call('/api/drift/unignore',{ids:[ub.dataset.unign]}).then(()=>{ toast('Showing its updates again'); return load(); })
     .catch(err=>toast('Failed: '+esc(err.message))); return; }
   const row=e.target.closest('tr.row'); if(row && !e.target.closest('a')){ const id=row.dataset.id; state.open.has(id)?state.open.delete(id):state.open.add(id); render(); refocus(`tr.row[data-id="${CSS.escape(id)}"]`); }
@@ -527,7 +553,7 @@ async function ignoreUpdate(id){
 }
 $('#showinc').addEventListener('click',()=>{ state.showInc=!state.showInc; try{ localStorage.setItem('kd.showinc',state.showInc?'1':''); }catch{} render(); refocus('#showinc'); });
 $('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
-$('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+ost.view,{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
+$('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+(ost.view==='orphans'?'orphans':'versions'),{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
 
 /* ------------------------------------------------------------------ orphaned resources */
 const OORDER = { orphan:0, managed:1, 'in-use':2, protected:3, ignored:4 };
@@ -711,10 +737,10 @@ async function run(fn){ try{ await fn(); }catch(e){ toast('Failed: '+esc(e.messa
 
 function setView(v){
   ost.view=v; document.querySelectorAll('.tab').forEach(t=>{ t.classList.toggle('on',t.dataset.view===v); t.setAttribute('aria-selected',t.dataset.view===v); });
-  $('#v-versions').hidden=v!=='versions'; $('#v-orphans').hidden=v!=='orphans';
-  $('#csv').hidden=v!=='versions'; $('#json').href=v==='versions'?'/api/drift':'/api/orphans';
-  try{ history.replaceState(null,'',v==='orphans'?'#orphans':location.pathname); }catch{}
-  v==='versions'?render():renderO();
+  $('#v-versions').hidden=v!=='versions'; $('#v-orphans').hidden=v!=='orphans'; $('#v-config').hidden=v!=='config';
+  $('#csv').hidden=v!=='versions'; $('#json').href={versions:'/api/drift',orphans:'/api/orphans',config:'/api/config'}[v];
+  try{ history.replaceState(null,'',v==='versions'?location.pathname:'#'+v); }catch{}
+  if(v==='orphans') renderO(); else { render(); if(v==='config') loadC(); }
 }
 document.addEventListener('click',e=>{
   const tab=e.target.closest('.tab'); if(tab){ setView(tab.dataset.view); return; }
@@ -736,6 +762,157 @@ document.addEventListener('change',e=>{
 });
 $('#o-rules').addEventListener('click',()=>run(showRules));
 $('#o-q').addEventListener('input',e=>{ ost.q=e.target.value.trim().toLowerCase(); renderO(); });
+
+/* ------------------------------------------------------------------ config */
+// GET /api/config: the image and Helm rules in effect (config file + dashboard rules, which replace the
+// file's entry for the same key) and the rest of the config, read-only. Rules are saved on kube-drift's
+// volume and start a version rescan.
+const cst = { data:null };
+const SECTION = {
+  images:{ title:'Image rules', noun:'image rule', keyLabel:'Image',
+    help:'Per container image: which versions to offer, where newer ones come from, and how the row reads.',
+    keyHelp:'The image without its tag: <code>host/path</code>, just the path for Docker Hub (<code>mongo</code>, <code>grafana/grafana</code>), or <code>re:&lt;regex&gt;</code> for many images.' },
+  helm:{ title:'Helm rules', noun:'Helm rule', keyLabel:'Release or chart',
+    help:'Per Helm release: where the chart is published, and which versions to offer.',
+    keyHelp:'The release name, <code>release@namespace</code> when two releases share a name, the chart name to cover every release of it, or <code>re:&lt;regex&gt;</code>.' },
+};
+const SETTING = { cluster_name:'Cluster name', scan_interval_hours:'Version scan interval (hours)', auth:'Sign-in', probes:'Version probes',
+  registries:'Registries', runtimes:'Container runtimes', static_pod_namespaces:'Static pod namespaces', ignore:'Ignored workloads',
+  ignore_images:'Ignored images', groups:'Workload groups', orphans:'Orphaned resources' };
+// The dashboard row a component's rule lives under, and the key a new rule for it would use.
+function ruleKey(c){
+  if(c.category==='helm') return c.name;
+  if(!c.image_repo) return '';
+  return c.image_host && c.image_host!=='docker.io'? `${c.image_host}/${c.image_repo}` : c.image_repo.replace(/^library\//,'');
+}
+const sectionOf = c => c.category==='helm'?'helm':'images';
+function safeLink(u){ return /^https?:\/\//i.test(u||'')?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(host(u))}</a>`:esc(u); }
+function describeCfgSource(sec,s){
+  if(!s) return sec==='helm'?'From an ArtifactHub search by chart name':'From newer tags in its registry';
+  switch(s.type){
+    case 'none': return 'Newer versions not looked up';
+    case 'github': return `From GitHub releases of ${esc(s.repo)}`+(s.version_regex?`, version from <code>${esc(s.version_regex)}</code>`:'');
+    case 'artifacthub': return `From ArtifactHub ${esc(s.repo)}/${esc(s.chart||'(chart name)')}`;
+    case 'oci': return `From chart tags at <code>${esc(s.ref)}</code>`;
+    default: return `Source <code>${esc(JSON.stringify(s))}</code>`;
+  }
+}
+function describeCfgRule(sec,r){
+  const known=new Set(['track','source','ref','name','note','loose_suffix']), out=[];
+  if(r.track&&r.track!=='any') out.push(`<b>Same ${esc(r.track)} version only</b>`);
+  out.push(describeCfgSource(sec,r.source));
+  if(r.name) out.push(`Shown as “${esc(r.name)}”`);
+  if(r.note) out.push(`Note: ${esc(r.note)}`);
+  if(r.loose_suffix!==undefined) out.push(r.loose_suffix?'Tags compared by their version part only':'Whole tags compared');
+  if(r.ref) out.push('Release notes: '+safeLink(r.ref));
+  const extra=Object.keys(r).filter(k=>!known.has(k));
+  if(extra.length) out.push(`<code>${esc(JSON.stringify(Object.fromEntries(extra.map(k=>[k,r[k]]))))}</code>`);
+  return out.map(x=>`<div>${x}</div>`).join('');
+}
+function usedBy(ids){
+  if(!ids.length) return '<span class="hint" title="No row matched this rule in the last scan">none in the last scan</span>';
+  const comps=state.data?.components||[], names=ids.map(id=>{ const c=comps.find(x=>x.id===id); return c?`${c.name}${c.namespace&&c.namespace!=='-'?' ('+c.namespace+')':''}`:id; });
+  return `${ids.length} row${ids.length===1?'':'s'}<div class="sub" title="${esc(names.join('\n'))}">${esc(names.slice(0,3).join(', '))}${names.length>3?` +${names.length-3}`:''}</div>`;
+}
+function renderC(){
+  const d=cst.data; if(!d) return;
+  const ed=d.editable, ndash=d.images.concat(d.helm).filter(e=>e.from==='dashboard').length;
+  const env=Object.entries(d.env||{}).map(([k,v])=>`<code>${esc(k)}=${esc(v)}</code>`).join(', ');
+  let h=`<p class="intro">kube-drift reads its config from <code>${esc(d.file)}</code>${env?`, with ${env} set in its environment`:''}. `+
+    `Image and Helm rules can also be added here: they're kept on kube-drift's volume, apply from the next version scan, and replace the config file's entry for the same key. Everything else is changed in the config file.</p>`;
+  if(!ed) h+=`<div class="banner">Rules can't be saved here: the data directory isn't writable.</div>`;
+  for(const sec of ['images','helm']){
+    const S=SECTION[sec], rows=d[sec];
+    h+=`<h2 class="ch">${S.title}${ed?` <button type="button" data-cadd="${sec}">Add ${S.noun}</button>`:''}</h2><p class="hint">${S.help} ${S.keyHelp.replace(/^The/,'Key: the')}</p>`;
+    h+=`<div class="tablewrap"><table><thead><tr><th style="min-width:11em">${S.keyLabel}</th><th>Settings</th><th class="hide-sm">Used by</th><th style="width:1%"></th></tr></thead><tbody>`+
+      (rows.length?rows.map(e=>{
+        const dash=e.from==='dashboard', ref=`data-sec="${sec}" data-key="${esc(e.key)}"`;
+        const from=dash?`<span class="from dash" title="${e.replaces?esc('Replaces the config file’s '+JSON.stringify(e.replaces)):''}">dashboard${e.replaces?', replaces config file':''}</span> <span class="sub">${e.by?esc(e.by)+', ':''}${rel(e.at)}</span>`
+          :'<span class="from">config file</span>';
+        const acts=!ed?'':dash?`<button type="button" data-cedit ${ref}>Edit…</button> <button type="button" class="danger" data-cdel ${ref}>${e.replaces?'Revert':'Remove'}</button>`
+          :`<button type="button" data-cedit ${ref} title="Make a dashboard rule that replaces this entry">Override…</button>`;
+        return `<tr><td><div class="ckey">${esc(e.key)}</div>${from}</td><td>${describeCfgRule(sec,e.rule)}</td><td class="hide-sm">${usedBy(e.components)}</td><td class="acts">${acts}</td></tr>`;
+      }).join(''):`<tr><td colspan="4" class="empty">No ${S.noun}s: every ${sec==='helm'?'release':'image'} uses the defaults.${ed?` Add one here, or with <b>Configure…</b> on a row in Version drift.`:''}</td></tr>`)+
+      '</tbody></table></div>';
+  }
+  if(d.dashboard_yaml) h+=`<h2 class="ch">Move dashboard rules into the config file <button type="button" id="c-copy">Copy YAML</button> <span class="hint" id="c-copied"></span></h2>
+    <p class="hint">Paste under the config file's <code>images:</code> and <code>helm:</code>, apply it, then remove the dashboard rules here.</p>
+    <div class="tablewrap" style="padding:10px 12px"><pre class="cfg" id="c-yaml">${esc(d.dashboard_yaml)}</pre></div>`;
+  const keys=Object.keys(d.settings||{});
+  h+=`<h2 class="ch">Everything else in the config file</h2><p class="hint">Read-only here. Values that look secret, probe headers and passwords in URLs show as (hidden). Keys not listed use their defaults (<a href="https://github.com/opswhisperer/kube-drift/blob/main/config/example.yaml" target="_blank" rel="noopener">config/example.yaml</a>).</p>`+
+    (keys.length?`<div class="cset">${keys.map(k=>`<section><h3>${esc(SETTING[k]||k)}<code>${esc(k)}</code></h3><pre class="cfg">${esc(d.settings_yaml[k])}</pre></section>`).join('')}</div>`
+      :'<p class="hint">Nothing: kube-drift runs on its defaults.</p>');
+  $('#c-body').innerHTML=h;
+}
+async function loadC(){ try{ cst.data=await get('/api/config'); if(ost.view==='config') renderC(); }catch(e){ if(ost.view==='config') $('#c-body').innerHTML=`<p class="hint">Cannot load the config: ${esc(e.message||e)}</p>`; } }
+
+// The rule editor. `orig` is the dashboard key being edited (renaming it replaces that rule).
+async function editRule(sec, {key='', rule={}, orig=null, note=''}={}){
+  const S=SECTION[sec], s=rule.source||{}, t=s.type||'';
+  const fileHas=k=>(cst.data?.[sec]||[]).some(e=>e.key===k && (e.from==='config'||e.replaces));
+  const opt=(v,l,cur)=>`<option value="${v}" ${v===cur?'selected':''}>${l}</option>`;
+  const srcs=sec==='images'?[['','Newer tags in its registry (default)'],['github','GitHub releases'],['none','Don’t look it up']]
+    :[['','ArtifactHub search by chart name (default)'],['artifacthub','An ArtifactHub repository'],['oci','An OCI registry'],['github','GitHub releases'],['none','Don’t look it up']];
+  const loose=rule.loose_suffix===true?'1':rule.loose_suffix===false?'0':'';
+  const body=`${note?`<p>${note}</p>`:''}<div class="cform">
+    <label>${S.keyLabel} <input type="text" id="cf-key" value="${esc(key)}" required spellcheck="false" autocomplete="off">
+      <span class="hint">${S.keyHelp}</span><span class="hint" id="cf-keynote"></span></label>
+    <label>Versions to offer <select id="cf-track">${opt('any','Any newer version',rule.track||'any')}${opt('minor','Same minor version only (patches)',rule.track)}${opt('major','Same major version only',rule.track)}</select>
+      <span class="hint">The newest overall still shows as “outside your track”.</span></label>
+    <label>Newer versions from <select id="cf-src">${srcs.map(([v,l])=>opt(v,l,t)).join('')}</select></label>
+    <label data-for="github">GitHub repository <input type="text" id="cf-gh" value="${esc(t==='github'?s.repo:'')}" placeholder="owner/name" spellcheck="false"></label>
+    <label data-for="github">Version from release names (optional) <input type="text" id="cf-vre" value="${esc(s.version_regex||'')}" placeholder="n8n@(\\d+\\.\\d+\\.\\d+)" spellcheck="false">
+      <span class="hint">A regex whose first group is the version, for releases named like <code>n8n@1.2.3</code>.</span></label>
+    <div class="pair" data-for="artifacthub"><label>ArtifactHub repository <input type="text" id="cf-ah" value="${esc(t==='artifacthub'?s.repo:'')}" placeholder="bitnami" spellcheck="false"></label>
+      <label>Chart (optional) <input type="text" id="cf-chart" value="${esc(s.chart||'')}" placeholder="the installed chart's name" spellcheck="false"></label></div>
+    <label data-for="oci">Chart in an OCI registry <input type="text" id="cf-oci" value="${esc(s.ref||'')}" placeholder="docker.io/envoyproxy/gateway-helm" spellcheck="false"></label>
+    <label>Release notes link (optional) <input type="url" id="cf-ref" value="${esc(rule.ref||'')}" placeholder="https://github.com/org/app/releases"></label>
+    ${sec==='images'?`<div class="pair"><label>Show as (optional) <input type="text" id="cf-name" value="${esc(rule.name||'')}" maxlength="200" placeholder="the workload's name"></label>
+      <label>Note (optional) <input type="text" id="cf-note" value="${esc(rule.note||'')}" maxlength="200"></label></div>
+    <label>Tag suffixes <select id="cf-loose">${opt('','Default (version part only for your own registries)',loose)}${opt('1','Compare the version part only (1.4.2-a1b2c3-r1)',loose)}${opt('0','Compare whole tags',loose)}</select></label>`:''}
+  </div>`;
+  const p=modal({title:orig?`Edit ${S.noun}`:fileHas(key)?`Override ${S.noun}`:`Add ${S.noun}`, ok:'Save', body});
+  const sync=()=>{ const v=$('#cf-src').value; document.querySelectorAll('.cform [data-for]').forEach(el=>el.hidden=!el.dataset.for.split(' ').includes(v));
+    const k=$('#cf-key').value.trim(); $('#cf-keynote').textContent=k && fileHas(k)?'The config file has a rule for this key: saving replaces it until you revert.':''; };
+  $('#cf-src').addEventListener('change',sync); $('#cf-key').addEventListener('input',sync); sync(); if(!key) $('#cf-key').focus();
+  const r=await p; if(!r.ok) return;
+  const v=id=>($('#'+id)?.value||'').trim(), out={}, src=v('cf-src');
+  if(v('cf-track')!=='any') out.track=v('cf-track');
+  if(src==='none') out.source={type:'none'};
+  else if(src==='github'){ out.source={type:'github',repo:v('cf-gh')}; if(v('cf-vre')) out.source.version_regex=v('cf-vre'); if(t==='github'&&s.prefer_tags) out.source.prefer_tags=true; }
+  else if(src==='artifacthub'){ out.source={type:'artifacthub',repo:v('cf-ah')}; if(v('cf-chart')) out.source.chart=v('cf-chart'); }
+  else if(src==='oci') out.source={type:'oci',ref:v('cf-oci')};
+  if(v('cf-ref')) out.ref=v('cf-ref');
+  if(sec==='images'){ if(v('cf-name')) out.name=v('cf-name'); if(v('cf-note')) out.note=v('cf-note'); if(v('cf-loose')) out.loose_suffix=v('cf-loose')==='1'; }
+  const newKey=v('cf-key');
+  try{
+    await call('/api/config/rules',{section:sec,key:newKey,rule:out});
+    if(orig && orig!==newKey) await call('/api/config/rules/delete',{section:sec,key:orig});
+  }catch(e){ toast('Not saved: '+esc(e.message),8000); return editRule(sec,{key:newKey,rule:out,orig,note}); }
+  toast(`Saved ${esc(newKey)}. Rescanning versions…`);
+  await loadC(); setTimeout(()=>{ load(); loadC(); },1500);
+}
+async function configure(id){
+  const c=(state.data?.components||[]).find(x=>x.id===id); if(!c) return;
+  if(!cst.data) await loadC();
+  const sec=sectionOf(c), key=c.config_key||ruleKey(c), e=(cst.data?.[sec]||[]).find(x=>x.key===key);
+  const what=c.category==='helm'?`release ${esc(c.name)}`:`<code>${esc(c.image)}</code>`;
+  const note=c.config_key?.startsWith('re:')?`${what} uses the rule <code>${esc(c.config_key)}</code>, which covers every ${sec==='helm'?'release':'image'} it matches. Change the key to make a rule for this one only.`
+    :c.category==='helm'?`For ${what}. Use <code>${esc(c.name)}@${esc(c.namespace)}</code> as the key if another release shares its name, or the chart name to cover all of its releases.`:`For ${what}, wherever it runs.`;
+  await editRule(sec,{key, rule:e?e.rule:{}, orig:e?.from==='dashboard'?key:null, note});
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#v-config')) return;
+  const add=e.target.closest('[data-cadd]'); if(add){ run(()=>editRule(add.dataset.cadd)); return; }
+  const ed=e.target.closest('[data-cedit]'); if(ed){ const sec=ed.dataset.sec, x=cst.data[sec].find(r=>r.key===ed.dataset.key); if(!x) return;
+    run(()=>editRule(sec,{key:x.key, rule:x.rule, orig:x.from==='dashboard'?x.key:null,
+      note:x.from==='config'?'Saving makes a dashboard rule that replaces this config file entry; <b>Revert</b> brings the file’s back.':''})); return; }
+  const del=e.target.closest('[data-cdel]'); if(del){ const {sec,key}=del.dataset;
+    if(!confirm(`${del.textContent} the ${SECTION[sec].noun} “${key}”?`)) return;
+    run(async()=>{ await call('/api/config/rules/delete',{section:sec,key}); toast(`${del.textContent==='Revert'?'Reverted':'Removed'} ${esc(key)}. Rescanning versions…`); await loadC(); setTimeout(()=>{ load(); loadC(); },1500); }); return; }
+  if(e.target.id==='c-copy'){ navigator.clipboard.writeText(cst.data.dashboard_yaml).then(()=>{ $('#c-copied').textContent='Copied.'; },
+    ()=>{ const r=document.createRange(); r.selectNodeContents($('#c-yaml')); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); $('#c-copied').textContent='Selected — press ⌘C / Ctrl+C.'; }); }
+});
 
 /* ------------------------------------------------------------------ sign-in and API keys */
 async function whoami(){
@@ -771,8 +948,8 @@ document.addEventListener('click',e=>{
 });
 
 whoami();
-if(location.hash==='#orphans') setView('orphans');
-load(); loadO(); setInterval(()=>{ load(); loadO(); }, 60000);
+if(location.hash==='#orphans'||location.hash==='#config') setView(location.hash.slice(1));
+load(); loadO(); setInterval(()=>{ load(); loadO(); if(ost.view==='config') loadC(); }, 60000);
 </script>
 </body>
 </html>

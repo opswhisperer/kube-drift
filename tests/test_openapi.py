@@ -110,6 +110,26 @@ class Live(unittest.TestCase):
         self.assertTrue(ignored)
         self.assertEqual({k for i in ignored for k in i} - props("UpdateIgnored"), set())
 
+    def test_config_fields(self):
+        saved = dict(main.CONFIG)
+        main.CONFIG.update({"cluster_name": "demo", "images": {"mongo": {"track": "major"}}, "ignore": [{"name": "x"}]})
+        try:
+            req = urllib.request.Request(self.base + "/api/config/rules", method="POST", headers={"Content-Type": "application/json"},
+                                         data=json.dumps({"section": "images", "key": "mongo", "rule": {"track": "minor"}}).encode())
+            with urllib.request.urlopen(req) as r:
+                saved_rule = json.loads(r.read())
+            post = SPEC["paths"]["/api/config/rules"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+            self.assertEqual(set(saved_rule) - set(post["properties"]), set())
+            _, _, body = self.get("/api/config")
+            d = json.loads(body)
+            self.assertEqual(set(d) - props("Config"), set())
+            self.assertEqual({k for e in d["images"] + d["helm"] for k in e} - props("ConfigRule"), set())
+            self.assertIn("replaces", d["images"][0])
+        finally:
+            main.CONFIG.clear()
+            main.CONFIG.update(saved)
+            main.STATE.wake.clear()
+
     def test_openapi_and_docs(self):
         status, headers, body = self.get("/openapi.json")
         self.assertEqual(json.loads(body)["openapi"], "3.1.0")

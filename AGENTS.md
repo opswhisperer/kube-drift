@@ -27,6 +27,12 @@ check against the fixture cluster.
   the upgrade.
 - **Ignore-rule matching exists twice**: `rule_match` in `app/orphans.py` and `matchRule` in
   `app/static/index.html` (live match counts). Change both.
+- **Image and Helm rules can also be edited in the dashboard** (`app/overrides.py`, saved in
+  `overrides.json`). A new field under `images:` or `helm:` needs adding to `validate_rule` and
+  to the editor in `editRule` (`app/static/index.html`), or it can't be set there. Only these
+  two sections are editable. Keep it that way for anything that sends credentials or headers
+  (sign-in, probes, registries). `GET /api/config` redacts secret-looking values; check that a
+  new secret config key is caught by `SECRET_KEY` there.
 - **User-visible changes** get a line in `CHANGELOG.md` under `[Unreleased]` (Added, Changed,
   Fixed, Removed). A release renames that section to the version and date.
 - **New or changed config keys** go in `config/example.yaml`, explained by the dashboard

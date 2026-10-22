@@ -32,15 +32,20 @@ def _match(rule: dict, ns: str, name: str) -> bool:
     return True
 
 
-def _lookup(table: dict, *keys: str) -> dict:
-    """Exact key match first; then any `re:<pattern>` key whose regex matches a key."""
+def _find(table: dict, *keys: str) -> tuple[Optional[str], dict]:
+    """(matching key, entry): exact key match first; then any `re:<pattern>` key whose regex
+    matches a key. (None, {}) when nothing matches."""
     for k in keys:
         if k in table:
-            return table[k]
+            return k, table[k]
     for pat, val in table.items():
         if pat.startswith("re:") and any(re.search(pat[3:], k) for k in keys):
-            return val
-    return {}
+            return pat, val
+    return None, {}
+
+
+def _lookup(table: dict, *keys: str) -> dict:
+    return _find(table, *keys)[1]
 
 
 def _image_key(ref: str) -> str:
@@ -127,9 +132,9 @@ class Scanner:
         for r in self.k8s.helm_releases():
             if r["status"] not in ("deployed", "superseded"):
                 continue
-            ov = _lookup(overrides, f"{r['name']}@{r['namespace']}", r["name"], r["chart"])
+            ov_key, ov = _find(overrides, f"{r['name']}@{r['namespace']}", r["name"], r["chart"])
             src = ov.get("source") or {"type": "artifacthub-search", "chart": r["chart"]}
-            out.append({
+            out.append({**({"config_key": ov_key} if ov_key else {}),
                 "id": f"helm/{r['namespace']}/{r['name']}", "category": "helm", "install": "helm",
                 "name": r["name"], "namespace": r["namespace"],
                 "installed": r["chart_version"], "installed_app": r["app_version"],
@@ -160,7 +165,7 @@ class Scanner:
                       release_ns: Optional[str] = None):
             host, repo, tag, pinned_digest = upstream.split_image(image)
             key = f"{host}/{repo}" if host != "docker.io" else repo.removeprefix("library/")
-            icfg = _lookup(images_cfg, f"{host}/{repo}", key, repo)
+            icfg_key, icfg = _find(images_cfg, f"{host}/{repo}", key, repo)
             # your own registry: one the config names, or one kube-drift has credentials for
             own_registry = host not in upstream.PUBLIC_REGISTRIES and (
                 host in self.cfg.get("registries", {}) or self.reg.has_credentials(host))
@@ -178,6 +183,8 @@ class Scanner:
                 "ref": icfg.get("ref") or upstream.reference_url(host, repo), "ref_overridden": bool(icfg.get("ref")),
                 "note": icfg.get("note") or note, "first_party": own_registry,
             }
+            if icfg_key:
+                comp["config_key"] = icfg_key
             if helm_release:
                 comp["release"] = f"helm/{release_ns or ns}/{helm_release}"
             return comp

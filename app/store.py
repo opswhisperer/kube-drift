@@ -3,6 +3,7 @@
     ignored.json        {"Kind/ns/name": {kind, namespace, name, note, at}}
     rules.json          [{id, kind?, namespace?, name_regex?, source?, note, at}]
     update-ignores.json {"<component id>": {latest, latest_any, digest, note, at, until, kube_version, until_newer}}
+    overrides.json      {"images"|"helm": {"<config key>": {rule, at, by}}}   (overrides.py)
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ class Store:
         self._ignored = self._read_json(self.root / "ignored.json", {})
         self._rules = self._read_json(self.root / "rules.json", [])
         self._updates = self._read_json(self.root / "update-ignores.json", {})
+        self._overrides = self._read_json(self.root / "overrides.json", {})
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -117,3 +119,25 @@ class Store:
 
     def _write_updates(self):
         self._write_atomic(self.root / "update-ignores.json", json.dumps(self._updates, indent=1, sort_keys=True))
+
+    # ------------------------------------------------------- image and Helm rules
+    def config_rules(self) -> dict:
+        with self.lock:
+            return {sec: {k: dict(v) for k, v in rules.items()} for sec, rules in self._overrides.items()}
+
+    def set_config_rule(self, section: str, key: str, rule: dict, by: str = "") -> dict:
+        with self.lock:
+            e = {"rule": rule, "at": _now(), "by": by[:200]}
+            self._overrides.setdefault(section, {})[key] = e
+            self._write_overrides()
+        return e
+
+    def remove_config_rule(self, section: str, key: str) -> bool:
+        with self.lock:
+            ok = self._overrides.get(section, {}).pop(key, None) is not None
+            if ok:
+                self._write_overrides()
+        return ok
+
+    def _write_overrides(self):
+        self._write_atomic(self.root / "overrides.json", json.dumps(self._overrides, indent=1))
