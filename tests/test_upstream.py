@@ -1,3 +1,4 @@
+import base64
 import json
 import tempfile
 import unittest
@@ -128,6 +129,118 @@ class Credentials(unittest.TestCase):
         with self.assertRaises(HttpError):
             self.call("docker.io", {}, {})
         self.assertEqual(self.token_auth, [None])
+
+
+def b64(text):
+    return base64.b64encode(text.encode()).decode()
+
+
+class DockerConfig(unittest.TestCase):
+    """Credentials from a mounted pull secret (kubernetes.io/dockerconfigjson), no config needed."""
+
+    def setUp(self):
+        upstream._tokens.clear()
+        upstream._auth_files.clear()
+        self.addCleanup(upstream._tokens.clear)
+        self.addCleanup(upstream._auth_files.clear)
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = str(Path(self.dir.name) / ".dockerconfigjson")
+
+    def write(self, data):
+        Path(self.path).write_text(data if isinstance(data, str) else json.dumps(data))
+
+    def test_auth_and_username_password_for_many_hosts(self):
+        self.write({"auths": {
+            "reg.example": {"auth": b64("robot:s3cret")},
+            "https://other.example:5000/v2/": {"username": "me", "password": "pw"},
+            "https://index.docker.io/v1/": {"username": "hubuser", "password": "pat", "auth": "not base64!"},
+            "token-only.example": {"identitytoken": "refresh"},
+        }})
+        parsed = upstream.docker_config(self.path)
+        self.assertEqual(parsed["reg.example"], {"": b64("robot:s3cret")})
+        self.assertEqual(parsed["other.example:5000"], {"": b64("me:pw")})
+        self.assertEqual(parsed["docker.io"], {"": b64("hubuser:pat")})  # bad `auth`: username + password
+        self.assertNotIn("token-only.example", parsed)
+
+    def test_docker_hub_under_any_name(self):
+        self.write({"auths": {"https://index.docker.io/v1/": {"auth": b64("hubuser:pat")}}})
+        reg = Registry(auth_file=self.path)
+        for host in ("docker.io", "index.docker.io", "registry-1.docker.io"):
+            self.assertEqual(reg._basic(host, "library/nginx"), b64("hubuser:pat"), host)
+        self.assertIsNone(reg._basic("docker.n8n.io", "n8nio/n8n"))  # a mirror borrows them only for a Hub token
+        self.assertIsNone(reg._basic("ghcr.io", "acme/app"))
+
+    def test_longest_path_prefix_wins(self):
+        self.write({"auths": {"reg.example": {"auth": b64("all:x")}, "reg.example/team": {"auth": b64("team:x")}}})
+        reg = Registry(auth_file=self.path)
+        self.assertEqual(reg._basic("reg.example", "team/app"), b64("team:x"))
+        self.assertEqual(reg._basic("reg.example", "teamx/app"), b64("all:x"))
+        self.assertEqual(reg._basic("reg.example", "other/app"), b64("all:x"))
+
+    def test_path_only_entry_leaves_other_repos_anonymous(self):
+        self.write({"auths": {"reg.example/team": {"auth": b64("team:x")}}})
+        reg = Registry(auth_file=self.path)
+        self.assertIsNone(reg._basic("reg.example", "other/app"))
+        self.assertTrue(reg.has_credentials("reg.example"))
+
+    def test_legacy_dockercfg_format(self):
+        self.write({"reg.example": {"auth": b64("old:style")}})
+        self.assertEqual(Registry(auth_file=self.path)._basic("reg.example", "a/b"), b64("old:style"))
+
+    def test_missing_file_means_anonymous(self):
+        reg = Registry(auth_file=self.path)
+        self.assertIsNone(reg._basic("reg.example", "a/b"))
+        self.assertFalse(reg.has_credentials("reg.example"))
+        self.assertEqual(upstream.docker_config(""), {})  # REGISTRY_AUTH_FILE="" turns it off
+
+    def test_malformed_file_is_ignored_without_leaking_it(self):
+        for text in ('{"auths": {"reg.example": {"auth": "c2VjcmV0"', "[1, 2]", '{"auths": ["reg.example"]}'):
+            with self.subTest(text=text):
+                upstream._auth_files.clear()
+                self.write(text)
+                with self.assertLogs("kube-drift.upstream", "WARNING") as logs:
+                    self.assertEqual(upstream.docker_config(self.path), {})
+                self.assertNotIn("c2VjcmV0", "".join(logs.output))
+                self.assertIsNone(Registry(auth_file=self.path)._basic("reg.example", "a/b"))
+
+    def test_rotated_secret_is_reread(self):
+        self.write({"auths": {"reg.example": {"auth": b64("old:x")}}})
+        reg = Registry(auth_file=self.path)
+        self.assertEqual(reg._basic("reg.example", "a/b"), b64("old:x"))
+        self.write({"auths": {"reg.example": {"auth": b64("rotated:xyz")}}})
+        self.assertEqual(reg._basic("reg.example", "a/b"), b64("rotated:xyz"))
+
+    def test_default_path_comes_from_the_environment(self):
+        self.write({"auths": {"reg.example": {"auth": b64("env:x")}}})
+        with mock.patch.dict("os.environ", {"REGISTRY_AUTH_FILE": self.path}):
+            self.assertEqual(Registry()._basic("reg.example", "a/b"), b64("env:x"))
+
+    def test_auth_env_wins_over_the_file(self):
+        self.write({"auths": {"reg.example": {"auth": b64("file:x")}}})
+        cfg = {"reg.example": {"auth_env": "REG_AUTH"}}
+        with mock.patch.dict("os.environ", {"REG_AUTH": "env:y"}):
+            self.assertEqual(Registry(cfg, auth_file=self.path)._basic("reg.example", "a/b"), b64("env:y"))
+        with mock.patch.dict("os.environ", {"REG_AUTH": ""}):  # named but unset: the file still counts
+            self.assertEqual(Registry(cfg, auth_file=self.path)._basic("reg.example", "a/b"), b64("file:x"))
+
+    def test_file_credentials_buy_a_bearer_token(self):
+        self.write({"auths": {"https://index.docker.io/v1/": {"auth": b64("me:pat")}}})
+        token_auth = []
+        def get_json(url, headers=None):
+            token_auth.append((headers or {}).get("Authorization"))
+            return {"token": "private" if headers else "anonymous"}
+        def hub(url, method="GET", headers=None, insecure=False):
+            if (headers or {}).get("Authorization") == "Bearer private":
+                return Resp(["1.0.0"])
+            raise HttpError(401, url, Credentials.HUB)
+        with mock.patch.object(upstream, "request", hub), mock.patch.object(upstream, "get_json", get_json):
+            reg = Registry(auth_file=self.path)
+            self.assertEqual(reg._call("docker.io", "acme/private", "tags/list").json()["tags"], ["1.0.0"])
+            self.assertEqual(reg._call("docker.n8n.io", "n8nio/n8n", "tags/list").json()["tags"], ["1.0.0"])
+            with self.assertRaises(HttpError):  # another registry pointing at auth.docker.io gets nothing
+                reg._call("evil.example", "acme/private", "tags/list")
+        self.assertEqual(token_auth, [f"Basic {b64('me:pat')}"] * 2 + [None])
 
 
 class ReferenceUrl(unittest.TestCase):

@@ -3,6 +3,7 @@ from unittest import mock
 
 from app.scan import Scanner
 from tests.fake_k8s import FakeK8s
+from app import upstream
 from app.upstream import split_image
 from app.http import HttpError
 from app.versions import cmp_versions, is_floating, pick_latest, satisfies, walk_up
@@ -111,6 +112,19 @@ class OwnRegistry(unittest.TestCase):
         self.assertFalse(comps["nginx:1.27-alpine"]["loose_suffix"])
         self.assertTrue(comps["reg.example:5000/app:1.0.0-abc"]["loose_suffix"])
 
+
+    def test_a_registry_in_the_pull_secret_is_your_own(self):
+        # No `registries` entry: credentials in the mounted pull secret are enough.
+        k8s = FakeK8s()
+        ws = k8s.workloads()
+        ws.append({"kind": "Deployment", "metadata": {"namespace": "apps", "name": "built-here"},
+                   "spec": {"template": {"spec": {"containers": [{"name": "a", "image": "reg.example/team/app:1.0.0-abc"}]}}}})
+        k8s.workloads = lambda: ws
+        creds = {"reg.example": {"team": "eDp5"}, "docker.io": {"": "eDp5"}}
+        with mock.patch.object(upstream, "docker_config", return_value=creds):
+            comps = {c["image"]: c for c in Scanner(k8s, {}).inventory() if c.get("image_host")}
+        self.assertTrue(comps["reg.example/team/app:1.0.0-abc"]["loose_suffix"])
+        self.assertFalse(comps["nginx:1.27-alpine"]["loose_suffix"])  # docker.io stays public
 
 class KubeVersionRange(unittest.TestCase):
     def test_satisfies(self):

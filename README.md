@@ -50,7 +50,8 @@ registry. Add a config file when the dashboard shows you something wrong or nois
 | A Helm release is **unknown**, or "Available" belongs to a different chart | `helm:` — where that chart is really published |
 | "Available" is a major upgrade you can't take yet | `track: major` on that image (`images:`) or release (`helm:`) |
 | An app on `latest`/`main` only says "newer image behind tag" | `probes:` — ask the app for its version over HTTP |
-| Images from your own registry show errors | `registries:` — plain HTTP, credentials |
+| Images from your own registry show HTTP 401 | no config: a pull secret, see [Registry credentials](#registry-credentials) |
+| Images from a plain-HTTP registry show an SSL error | `registries:` — `insecure: true` |
 | Rows you'll never act on | `ignore:` (workloads), `ignore_images:` (sidecars), `groups:` (many generated copies → one row) |
 | Orphans that are fine | `orphans.ignore:` — or **Ignore** in the dashboard |
 
@@ -102,8 +103,27 @@ The same directory is where the rest of your customisation goes: another namespa
 
 Optional: a Secret named `kube-drift-credentials` in kube-drift's namespace with a
 `github-token` key raises the GitHub API limit from 60 to 5000 requests an hour, for chart and
-probe lookups that use GitHub releases. Private-registry credentials are covered under
-`registries:` in [`config/example.yaml`](config/example.yaml).
+probe lookups that use GitHub releases.
+
+### Registry credentials
+
+Registries that want credentials even to read tags (your own registry, private repos, Docker
+Hub's rate limit) need no config change: give kube-drift a standard pull secret named
+`kube-drift-registry-auth` in its namespace. `deploy/base` mounts it if it exists.
+
+```bash
+kubectl -n kube-drift create secret docker-registry kube-drift-registry-auth \
+  --docker-server=registry.example.com --docker-username=reader --docker-password=…
+```
+
+Or copy a pull secret you already have, renamed; for several registries, put them all in one
+`.dockerconfigjson` and create the Secret with
+`--from-file=.dockerconfigjson=config.json --type=kubernetes.io/dockerconfigjson`. Hosts match
+as the kubelet matches them (`docker.io` under any of its names, longest path prefix), the
+Secret is re-read when it changes, and a read-only token is enough. kube-drift doesn't borrow
+the scanned pods' own `imagePullSecrets`. The older per-registry `auth_env` setting under
+`registries:` still works and wins for its host; see
+[`config/example.yaml`](config/example.yaml).
 
 ### Exposing it
 
@@ -326,8 +346,9 @@ so tools and agents can discover it from any endpoint.
 
 Environment: `CONFIG` (`/config/config.yaml`), `CLUSTER_NAME` (overrides the config),
 `SCAN_INTERVAL_HOURS`, `DATA_DIR` (`/data`), `GITHUB_TOKEN`, `OIDC_CLIENT_SECRET`,
-`SESSION_SECRET` (optional; set it to share sessions between replicas), plus any `auth_env` you
-name under `registries`.
+`SESSION_SECRET` (optional; set it to share sessions between replicas), `REGISTRY_AUTH_FILE`
+(`/etc/kube-drift/registry/.dockerconfigjson`, a Docker config JSON; `""` for none), plus any
+`auth_env` you name under `registries`.
 
 ## Development
 

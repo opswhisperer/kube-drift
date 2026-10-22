@@ -95,8 +95,9 @@ helm:
 #            else its registry page on Docker Hub, GHCR, Quay, ECR Public, registry.k8s.io, lscr.io
 #   note:    text shown under the name
 #   loose_suffix: true if every build gets a new suffix (1.4.2-a1b2c3-r1), so tags are compared
-#            by their version part only. On by default for images from your own `registries` below
-#            (not public ones listed there for credentials, such as docker.io).
+#            by their version part only. On by default for images from your own registries: ones
+#            listed under `registries` below or with credentials in the pull secret (not public
+#            ones such as docker.io that you only gave credentials for).
 images:
   # mongo:                      { track: major }                   # stay on 8.x
   # registry.k8s.io/kube-proxy: { track: minor, ref: https://kubernetes.io/releases/ }
@@ -140,20 +141,34 @@ groups:
   # - { label: Envoy Gateway proxies, namespace: envoy-gateway-system, name_regex: '^envoy-(?!gateway$)' }
 
 # ── registries ───────────────────────────────────────────────────────────────────────────
-# Symptom: images from your own registry show an error (HTTP 401, or an SSL error).
-# Fix:     tell kube-drift how to talk to it. Key: the registry host, as in the image name.
-#   insecure: true   the registry is plain HTTP
-#   auth_env: NAME   environment variable holding "user:password". Put the value in the
-#                    kube-drift-credentials Secret and add the variable to the Deployment with a
-#                    patch in your overlay:
-#                      - name: LOCAL_REGISTRY_AUTH
-#                        valueFrom: { secretKeyRef: { name: kube-drift-credentials, key: registry-auth } }
-# Symptom: a Docker Hub image shows "registry said HTTP 401" (a private repo) or "HTTP 429"
+# Symptom: images from your own registry show "registry said HTTP 401" (it wants credentials
+#          even to read tags), or a Docker Hub image shows HTTP 401 (a private repo) or HTTP 429
 #          (the anonymous rate limit).
-# Fix:     give docker.io an auth_env with your Docker Hub user and an access token. Mirrors that
-#          hand out Docker Hub tokens (docker.n8n.io) use it too.
+# Fix:     no config needed. Give kube-drift a pull secret named kube-drift-registry-auth in its
+#          namespace, with credentials for as many registries as you like; deploy/base mounts it:
+#            kubectl -n kube-drift create secret docker-registry kube-drift-registry-auth \
+#              --docker-server=registry.example.com --docker-username=… --docker-password=…
+#          or reuse a pull secret you already have (it's the same type):
+#            kubectl -n apps get secret my-regcred -o json \
+#              | jq '{apiVersion, kind, type, data, metadata: {name: "kube-drift-registry-auth"}}' \
+#              | kubectl -n kube-drift apply -f -
+#          For several registries, build one .dockerconfigjson ({"auths": {host: {"auth": …}, …}})
+#          and create it with --from-file=.dockerconfigjson=… --type=kubernetes.io/dockerconfigjson.
+#          Hosts match as the kubelet matches them: docker.io (also written index.docker.io or
+#          https://index.docker.io/v1/) covers Docker Hub and the mirrors that hand out Docker Hub
+#          tokens (docker.n8n.io); a key with a path (registry.example.com/team) covers only the
+#          repositories under it. A read-only token is enough. kube-drift re-reads the file when
+#          the Secret changes; REGISTRY_AUTH_FILE points it at another file ("" for none).
+#          (kube-drift doesn't borrow the scanned pods' own imagePullSecrets: it reads Secrets
+#          only to decode Helm releases, and never uses other namespaces' credentials.)
+#
+# Entries here, keyed by the registry host as in the image name, are only needed for:
+#   insecure: true   the registry is plain HTTP
+#   auth_env: NAME   older way, still supported: an environment variable holding "user:password",
+#                    which you add to the Deployment with a patch in your overlay. It wins over
+#                    the pull secret for that host.
 registries:
-  # "registry.local:5000": { insecure: true, auth_env: LOCAL_REGISTRY_AUTH }
+  # "registry.local:5000": { insecure: true }
   # docker.io: { auth_env: DOCKERHUB_AUTH }
 
 # ── runtimes, static pods ────────────────────────────────────────────────────────────────

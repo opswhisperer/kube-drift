@@ -35,8 +35,8 @@ DOCKER_HUB_AUTH = "auth.docker.io"
 # when they ask. Any other registry can name auth.docker.io in its challenge too: it gets no
 # credentials, or it could collect a Docker Hub token bought with them.
 DOCKER_HUB_HOSTS = {"registry-1.docker.io", "docker.n8n.io"}
-# Public registries: credentials under `registries` for one of these (to lift a rate limit or
-# reach a private repo) don't make its images your own builds.
+# Public registries: credentials for one of these (to lift a rate limit or reach a private repo)
+# don't make its images your own builds.
 PUBLIC_REGISTRIES = {
     "docker.io", "index.docker.io", "docker.n8n.io", "ghcr.io", "lscr.io", "quay.io",
     "registry.k8s.io", "public.ecr.aws", "gcr.io", "mcr.microsoft.com",
@@ -44,6 +44,86 @@ PUBLIC_REGISTRIES = {
 
 _token_lock = threading.Lock()
 _tokens: dict[str, str] = {}
+
+# Registry credentials as a Docker config JSON, the format of a kubernetes.io/dockerconfigjson
+# Secret (a pull secret), which deploy/base mounts here when it exists. Set the variable to ""
+# to read none.
+REGISTRY_AUTH_FILE = "/etc/kube-drift/registry/.dockerconfigjson"
+DOCKER_HUB_NAMES = {"docker.io", "index.docker.io", "registry-1.docker.io"}  # one registry, three names
+_auth_lock = threading.Lock()
+_auth_files: dict[str, tuple] = {}  # path -> (mtime_ns, size, parsed): Secret volumes update in place
+
+
+def _auth_key(key: str) -> tuple[str, str]:
+    """A Docker config `auths` key -> (host, path prefix), as docker and the kubelet read it:
+    'https://index.docker.io/v1/' -> ('docker.io', ''), 'reg.example:5000/team' -> ('reg.example:5000', 'team')."""
+    key = re.sub(r"^[a-z]+://", "", key.strip(), flags=re.I).strip("/")
+    host, _, path = key.partition("/")
+    host = host.lower()
+    if path in ("v1", "v2"):  # an API path, not a repository (the classic Docker Hub key)
+        path = ""
+    return ("docker.io" if host in DOCKER_HUB_NAMES else host), path
+
+
+def _basic_value(entry) -> Optional[str]:
+    """base64("user:password") from an `auths` entry: `auth`, else `username` + `password`."""
+    if not isinstance(entry, dict):
+        return None
+    auth = entry.get("auth")
+    if isinstance(auth, str) and auth.strip():
+        try:
+            if ":" in base64.b64decode(auth.strip(), validate=True).decode():
+                return auth.strip()
+        except (ValueError, UnicodeDecodeError):
+            pass
+    user, pw = entry.get("username"), entry.get("password")
+    if isinstance(user, str) and isinstance(pw, str) and user and pw:
+        return base64.b64encode(f"{user}:{pw}".encode()).decode()
+    return None  # an identitytoken alone is an OAuth refresh token: not something we can use
+
+
+def parse_docker_config(text: str) -> dict[str, dict[str, str]]:
+    """{host: {path prefix: base64 user:password}} from a Docker config JSON ({"auths": {...}}),
+    or from the older .dockercfg format, which is the `auths` map on its own."""
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    auths = data.get("auths") if "auths" in data else data
+    if not isinstance(auths, dict):
+        raise ValueError('"auths" is not an object')
+    out: dict[str, dict[str, str]] = {}
+    for key, entry in auths.items():
+        basic = _basic_value(entry)
+        host, path = _auth_key(key)
+        if basic and host:
+            out.setdefault(host, {})[path] = basic
+    return out
+
+
+def docker_config(path: Optional[str] = None) -> dict[str, dict[str, str]]:
+    """The parsed REGISTRY_AUTH_FILE, re-read when it changes; {} if there's none or it's unreadable."""
+    path = os.environ.get("REGISTRY_AUTH_FILE", REGISTRY_AUTH_FILE) if path is None else path
+    if not path:
+        return {}
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}  # no Secret mounted: anonymous, as before
+    stamp = (st.st_mtime_ns, st.st_size)
+    with _auth_lock:
+        cached = _auth_files.get(path)
+        if cached and cached[:2] == stamp:
+            return cached[2]
+    try:
+        with open(path, encoding="utf-8") as f:
+            parsed = parse_docker_config(f.read())
+        log.info("registry credentials for %s from %s", ", ".join(sorted(parsed)) or "no registry", path)
+    except (OSError, ValueError) as e:  # a JSON error names a position, never the file's content
+        log.warning("ignoring registry credentials in %s: %s", path, e)
+        parsed = {}
+    with _auth_lock:
+        _auth_files[path] = (*stamp, parsed)
+    return parsed
 
 # What was read from a digest: an image's OCI labels, or a Helm chart's metadata (chart_meta).
 # A digest's content never changes, so this outlives scans (and is saved under DATA_DIR): a
@@ -136,18 +216,36 @@ def label_link(labels: dict, repo: str) -> Optional[str]:
 
 
 class Registry:
-    """Anonymous (or basic-auth) Docker Registry v2 client with bearer-token dance."""
+    """Anonymous (or basic-auth) Docker Registry v2 client with bearer-token dance.
 
-    def __init__(self, registries_cfg: Optional[dict] = None):
+    Credentials for a registry come from its `auth_env` in the config, else from the Docker
+    config JSON at REGISTRY_AUTH_FILE (a mounted pull secret)."""
+
+    def __init__(self, registries_cfg: Optional[dict] = None, auth_file: Optional[str] = None):
         self.cfg = registries_cfg or {}
+        self.auth_file = auth_file  # None: REGISTRY_AUTH_FILE, read when used
 
     def _scheme(self, host: str) -> str:
         return "http" if self.cfg.get(host, {}).get("insecure") else "https"
 
-    def _basic(self, host: str) -> Optional[str]:
+    def _auth_paths(self, host: str) -> dict[str, str]:
+        return docker_config(self.auth_file).get("docker.io" if host in DOCKER_HUB_NAMES else host.lower(), {})
+
+    def _basic(self, host: str, repo: str = "") -> Optional[str]:
         env = self.cfg.get(host, {}).get("auth_env")
         val = os.environ.get(env, "") if env else ""
-        return base64.b64encode(val.encode()).decode() if val else None
+        if val:
+            return base64.b64encode(val.encode()).decode()
+        # As the kubelet matches a pull secret: the host as the image names it (docker.io under
+        # any of its names), and of its entries the longest path the repository starts with.
+        paths = self._auth_paths(host)
+        best = max((p for p in paths if not p or repo == p or repo.startswith(p + "/")), key=len, default=None)
+        return paths[best] if best is not None else None
+
+    def has_credentials(self, host: str) -> bool:
+        """Whether credentials are set up for this registry (for some repository on it)."""
+        env = self.cfg.get(host, {}).get("auth_env")
+        return bool(env and os.environ.get(env)) or bool(self._auth_paths(host))
 
     def _call(self, host: str, repo: str, path: str, method: str = "GET", accept: Optional[str] = None,
               _retry: bool = True):
@@ -156,7 +254,7 @@ class Registry:
         headers = {"Accept": accept or "application/json"}
         key = f"{real}/{repo}"
         insecure = self.cfg.get(host, {}).get("insecure", False)
-        basic = self._basic(host)
+        basic = self._basic(host, repo)
         cached = _tokens.get(key)
         if cached:
             headers["Authorization"] = f"Bearer {cached}"
@@ -197,7 +295,7 @@ class Registry:
             # A Docker Hub mirror (docker.n8n.io) hands out Docker Hub tokens: docker.io's
             # credentials get the same higher rate limit and private repos there. Bought with
             # them, the token is for pulling this repo only, whatever the challenge asks for.
-            basic = self._basic("docker.io")
+            basic = self._basic("docker.io", repo)
             scope = f"repository:{repo}:pull"
         q = urllib.parse.urlencode({k: v for k, v in {"service": m.get("service", ""), "scope": scope}.items() if v})
         url = realm + ("&" if "?" in realm else "?") + q
@@ -215,7 +313,7 @@ class Registry:
             try:
                 return self._hub_tags(repo)
             except HttpError:
-                if not self._basic(host):
+                if not self._basic(host, repo):
                     raise
                 # private repo: Hub's API doesn't know our credentials, the registry does
         if host == "quay.io":

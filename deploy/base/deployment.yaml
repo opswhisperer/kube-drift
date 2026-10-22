@@ -77,6 +77,9 @@ spec:
               mountPath: /tmp
             - name: data
               mountPath: /data
+            - name: registry-auth
+              mountPath: /etc/kube-drift/registry
+              readOnly: true
           resources:
             # kor runs as a child process during orphan scans
             requests:
@@ -117,6 +120,14 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: kube-drift-data
+        # Optional: credentials for private registries, as a pull secret (any registry, no config).
+        #   kubectl create secret docker-registry kube-drift-registry-auth --docker-server=… \
+        #     --docker-username=… --docker-password=…
+        # Without it the directory is empty and registries are read anonymously.
+        - name: registry-auth
+          secret:
+            secretName: kube-drift-registry-auth
+            optional: true
       dnsConfig:
         options:
           - name: ndots

@@ -161,7 +161,9 @@ class Scanner:
             host, repo, tag, pinned_digest = upstream.split_image(image)
             key = f"{host}/{repo}" if host != "docker.io" else repo.removeprefix("library/")
             icfg = _lookup(images_cfg, f"{host}/{repo}", key, repo)
-            own_registry = host in self.cfg.get("registries", {}) and host not in upstream.PUBLIC_REGISTRIES
+            # your own registry: one the config names, or one kube-drift has credentials for
+            own_registry = host not in upstream.PUBLIC_REGISTRIES and (
+                host in self.cfg.get("registries", {}) or self.reg.has_credentials(host))
             comp = {
                 "id": f"workload/{ns}/{name}/{repo.split('/')[-1]}",
                 "category": "helm-workload" if helm_release else "manifest",
