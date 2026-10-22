@@ -27,6 +27,8 @@ check against the fixture cluster.
   the upgrade.
 - **Ignore-rule matching exists twice**: `rule_match` in `app/orphans.py` and `matchRule` in
   `app/static/index.html` (live match counts). Change both.
+- **User-visible changes** get a line in `CHANGELOG.md` under `[Unreleased]` (Added, Changed,
+  Fixed, Removed). A release renames that section to the version and date.
 - **New or changed config keys** go in `config/example.yaml`, explained by the dashboard
   symptom they fix. Config is YAML; keys left empty load as null and are dropped (`load_config`).
 - **Dependencies stay minimal**: standard library plus PyYAML. The UI is one HTML file with

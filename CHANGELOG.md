@@ -1,0 +1,27 @@
+# Changelog
+
+Notable changes to kube-drift. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and versions follow [Semantic Versioning](https://semver.org/). Releases before 0.4.0 are in the
+git tags.
+
+## [Unreleased]
+
+### Added
+
+- Registry credentials from a standard pull secret, with no config change. Create a
+  `kubernetes.io/dockerconfigjson` Secret named `kube-drift-registry-auth` in kube-drift's
+  namespace, for example with `kubectl create secret docker-registry`, or copy a pull secret you
+  already have. `deploy/base` mounts it if it exists (`optional: true`), and one Secret can hold
+  credentials for any number of registries. Hosts match the way the kubelet matches them:
+  `docker.io` under any of its names, and the longest path prefix wins. The Secret is re-read when
+  it changes. `REGISTRY_AUTH_FILE` points kube-drift at another file, or `""` turns this off.
+  See [Registry credentials](README.md#registry-credentials).
+
+### Changed
+
+- A non-public registry that kube-drift has credentials for counts as your own registry, the same
+  as one listed under `registries:`. Its images get `loose_suffix` by default.
+- `registries:` entries are now needed only for `insecure: true`. `auth_env` still works and
+  still wins for its host, so existing configs keep working unchanged.
+
+[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.4.0...HEAD
