@@ -342,10 +342,14 @@ Described by OpenAPI 3.1 at `/openapi.json`, with an interactive reference at `/
 **API** button in the dashboard). API responses carry `Link: </openapi.json>; rel="service-desc"`,
 so tools and agents can discover it from any endpoint.
 
+`/api/drift` lists every row the dashboard shows, ignored ones and each image a Helm release
+ships included. For just what `summary.outdated` counts, say for a status tile, ask for
+`/api/drift?status=outdated&ignored=false&top=true`.
+
 | | |
 |---|---|
-| `GET /api/drift` | version scan (JSON) |
-| `GET /api/drift.csv` | version scan (CSV) |
+| `GET /api/drift[?status=…&ignored=…&top=…]` | version scan (JSON); the filters narrow `components` only |
+| `GET /api/drift.csv[?…]` | version scan (CSV), same filters |
 | `GET /api/orphans` | orphan scan, with ignores and rules applied |
 | `POST /api/rescan[?scope=versions\|orphans]` | rescan now |
 | `POST /api/orphans/ignore`, `/unignore` | `{ids, note}` |

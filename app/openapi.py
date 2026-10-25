@@ -22,6 +22,19 @@ _IDS = {
                    "an empty namespace (`ClusterRoleBinding//old-binding`).",
 }
 
+# Narrow `components` only; every other field, `summary` included, stays as without them.
+_DRIFT_FILTERS = [
+    {"name": "status", "in": "query", "required": False, "style": "form", "explode": True,
+     "description": "Only components with this status. Repeat it or comma-separate values for any of several.",
+     "schema": {"type": "array", "items": {"enum": ["outdated", "current", "unknown", "error"]}}},
+    {"name": "ignored", "in": "query", "required": False, "schema": {"type": "boolean"},
+     "description": "`false`: leave out components whose update is ignored (`ignored` set, also through their "
+                    "release). `true`: only those."},
+    {"name": "top", "in": "query", "required": False, "schema": {"type": "boolean"},
+     "description": "`true`: leave out Helm-managed workloads (components with `release`), which `summary` counts "
+                    "through their release. `false`: only those."},
+]
+
 SPEC: dict = {
     "openapi": "3.1.0",
     "info": {
@@ -64,13 +77,20 @@ SPEC: dict = {
         "/api/drift": {"get": {
             "tags": ["versions"], "operationId": "getVersionDrift",
             "summary": "Version scan: every component with installed and available versions",
-            "description": "Components are sorted with `outdated` first. `summary` counts components by status.",
-            "responses": {"200": _json("VersionScan")},
+            "description": "Components are sorted with `outdated` first. `summary` counts components by status.\n\n"
+                           "The query parameters narrow `components` and nothing else; they combine with AND. "
+                           "`?status=outdated&ignored=false&top=true` returns exactly the components `summary.outdated` "
+                           "counts, in the same order. An unknown parameter or value is a 400, not ignored.",
+            "parameters": _DRIFT_FILTERS,
+            "responses": {"200": _json("VersionScan"), "400": _ERROR},
         }},
         "/api/drift.csv": {"get": {
             "tags": ["versions"], "operationId": "getVersionDriftCsv",
             "summary": "Version scan as CSV",
-            "responses": {"200": {"description": "CSV with a header row", "content": {"text/csv": {"schema": {"type": "string"}}}}},
+            "description": "Takes the same filters as `GET /api/drift`.",
+            "parameters": _DRIFT_FILTERS,
+            "responses": {"200": {"description": "CSV with a header row", "content": {"text/csv": {"schema": {"type": "string"}}}},
+                          "400": _ERROR},
         }},
         "/api/drift/ignore": {"post": {
             "tags": ["versions"], "operationId": "ignoreUpdates",
