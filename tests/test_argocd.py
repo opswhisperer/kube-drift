@@ -227,6 +227,124 @@ class Releases(unittest.TestCase):
         self.assertEqual(set(res["argocd"]) - set(argo_schema), set())
 
 
+def gen_app(name, charts, revisions, namespace=None, manifests=True):
+    """An Application shaped like a generator's: one source per chart (pinned version, releaseName, a
+    values file from git), then the git repo as the `$values` ref, then the repo again as manifests.
+    The destination namespace is only set when the app has one namespace."""
+    git = f"https://git.example.com/platform/{name}.git"
+    sources = [{"repoURL": repo, "chart": chart, "targetRevision": ver,
+                "helm": {"releaseName": rel, "valueFiles": [f"$values/{name}/{rel}-values.yaml"]}}
+               for rel, repo, chart, ver in charts]
+    sources.append({"repoURL": git, "targetRevision": "main", "ref": "values"})
+    if manifests:
+        sources.append({"repoURL": git, "targetRevision": "main", "path": "."})
+    dest = {"server": "https://kubernetes.default.svc", **({"namespace": namespace} if namespace else {})}
+    return {"metadata": {"name": name, "namespace": "argocd"},
+            "spec": {"project": "platform", "sources": sources, "destination": dest},
+            "status": {"sync": {"status": "Synced", "revisions": revisions}}}
+
+
+GEN_APPS = {"argocd": [
+    # two charts in one namespace, plus the repo's own manifests
+    gen_app("agent", [("agent", "https://charts.example.com", "agent", "0.7.0"),
+                      ("agent-crds", "https://charts.example.com", "agent-crds", "0.7.0")],
+            ["0.7.0", "0.7.0", "1a2b3c4", "1a2b3c4"], namespace="agent"),
+    # one OCI chart plus manifests
+    gen_app("llm", [("llm", "ghcr.io/example/charts", "llm-helm", "1.80.0")], ["1.80.0", "1a2b3c4", "1a2b3c4"], namespace="llm"),
+    # charts for two namespaces: the generator sets no destination namespace
+    gen_app("agents", [("registry", "ghcr.io/example/charts", "registry", "0.4.1"),
+                       ("gw", "cr.example.com/charts", "gateway", "1.2.0"),
+                       ("gw-crds", "cr.example.com/charts", "gateway-crds", "1.2.0")],
+            ["0.4.1", "1.2.0", "1.2.0", "1a2b3c4", "1a2b3c4"]),
+]}
+GEN_SECRETS = [  # (release, namespace, chart, version): what Helm installed before the move
+    ("agent", "agent", "agent", "0.6.0"), ("agent-crds", "agent", "agent-crds", "0.6.0"), ("llm", "llm", "llm-helm", "1.70.0"),
+    ("registry", "agents", "registry", "0.4.0"), ("gw", "gateway-system", "gateway", "1.1.0"),
+    ("gw-crds", "gateway-system", "gateway-crds", "1.1.0")]
+GEN_WORKLOADS = [  # (ns, name, app or None, labels, Helm's leftover release annotation)
+    ("agent", "agent-controller", "agent", {"helm.sh/chart": "agent-0.7.0", "app.kubernetes.io/instance": "agent"}, None),
+    ("agent", "agent-crd-webhook", "agent", {"helm.sh/chart": "agent-crds-0.7.0"}, None),
+    ("agent", "agent-extra", "agent", {}, None),  # the repo's own manifest
+    ("llm", "llm", "llm", {"app.kubernetes.io/managed-by": "Helm"}, None),
+    ("llm", "llm-db", "llm", {}, "llm"),  # unlabelled, but Helm installed it before the move
+    ("llm", "llm-proxy", "llm", {}, None),  # the repo's own manifest
+    ("agents", "registry", "agents", {"helm.sh/chart": "registry-0.4.1"}, None),
+    ("gateway-system", "gw", "agents", {"helm.sh/chart": "gateway-1.2.0"}, None),
+]
+
+
+class GeneratorK8s(ArgoK8s):
+    def __init__(self):
+        super().__init__(GEN_APPS)
+
+    def helm_releases(self):
+        return [{"name": n, "namespace": ns, "revision": 3, "status": "deployed", "updated": "2026-09-01T00:00:00Z",
+                 "chart": c, "chart_version": v, "app_version": "", "home": "", "sources": [], "annotations": {}}
+                for n, ns, c, v in GEN_SECRETS]
+
+    def workloads(self):
+        out = []
+        for ns, name, app_name, labels, helm in GEN_WORKLOADS:
+            ann = {argocd.TRACKING: f"{app_name}:apps/Deployment:{ns}/{name}"} if app_name else {}
+            if helm:
+                ann.update({"meta.helm.sh/release-name": helm, "meta.helm.sh/release-namespace": ns})
+            out.append({"kind": "Deployment", "metadata": {"namespace": ns, "name": name, "labels": labels, "annotations": ann},
+                        "spec": {"template": {"spec": {"containers": [{"name": "c", "image": f"ghcr.io/example/{name}:1.0.0"}]}}}})
+        return out
+
+
+class GeneratorShaped(unittest.TestCase):
+    """Multi-source Applications as a generator writes them for charts moved off `helm install`."""
+
+    def setUp(self):
+        self.c = rows({"argocd": {"enabled": True}}, GeneratorK8s())
+
+    def test_every_chart_replaces_its_secret(self):
+        helm = {k: v for k, v in self.c.items() if v["category"] == "helm"}
+        self.assertEqual(sorted(helm), ["helm/agent/agent", "helm/agent/agent-crds", "helm/agents/registry",
+                                        "helm/gateway-system/gw", "helm/gateway-system/gw-crds", "helm/llm/llm"])
+        self.assertTrue(all(v["install"] == "argocd" for v in helm.values()))
+        r = helm["helm/agent/agent-crds"]
+        self.assertEqual((r["installed"], r["argocd"]["source_index"], r["argocd"]["replaced_secret_version"]), ("0.7.0", 1, "0.6.0"))
+        self.assertEqual(helm["helm/llm/llm"]["source"], {"type": "oci", "ref": "ghcr.io/example/charts/llm-helm"})
+
+    def test_no_namespace_set_uses_the_secrets(self):
+        gw = self.c["helm/gateway-system/gw"]
+        self.assertTrue(gw["argocd"]["namespace_assumed"])
+        self.assertIn("the Application sets no namespace, assumed gateway-system", gw["note"])
+        self.assertEqual(self.c["helm/agents/registry"]["argocd"]["replaced_secret_version"], "0.4.0")
+        self.assertNotIn("namespace_assumed", self.c["helm/agent/agent"]["argocd"])
+
+    def test_helm_namespace_wins(self):
+        apps = copy.deepcopy(GEN_APPS)
+        apps["argocd"][2]["spec"]["sources"][1]["helm"]["namespace"] = "edge"
+        self.assertEqual([s["namespace"] for s in argocd.helm_sources(apps["argocd"][2])], ["", "edge", ""])
+
+    def test_workloads_go_to_the_right_chart(self):
+        def rel(ns, name):
+            return self.c[f"workload/{ns}/{name}/{name}"].get("release")
+        self.assertEqual(rel("agent", "agent-controller"), "helm/agent/agent")
+        self.assertEqual(rel("agent", "agent-crd-webhook"), "helm/agent/agent-crds")  # not agent's, despite the prefix
+        self.assertEqual(rel("llm", "llm"), "helm/llm/llm")
+        self.assertEqual(rel("llm", "llm-db"), "helm/llm/llm")
+        self.assertEqual(self.c["workload/llm/llm-db/llm-db"]["install"], "argocd (llm)")
+        self.assertEqual(rel("agents", "registry"), "helm/agents/registry")
+        self.assertEqual(rel("gateway-system", "gw"), "helm/gateway-system/gw")
+        for ns, name in (("agent", "agent-extra"), ("llm", "llm-proxy")):  # the repo's own manifests
+            self.assertEqual(self.c[f"workload/{ns}/{name}/{name}"]["category"], "manifest", name)
+
+    def test_documented(self):
+        fields = SCHEMAS["Component"]["properties"]["argocd"]["properties"]
+        self.assertEqual({k for c in self.c.values() for k in c.get("argocd", {})} - set(fields), set())
+
+    def test_chart_label(self):
+        self.assertTrue(argocd.chart_label_matches("agent-0.7.0", "agent"))
+        self.assertTrue(argocd.chart_label_matches("gateway-v1.2.0", "gateway"))
+        self.assertFalse(argocd.chart_label_matches("agent-crds-0.7.0", "agent"))
+        self.assertFalse(argocd.chart_label_matches("agent", "agent"))
+        self.assertEqual(argocd.oci_ref("ghcr.io/example/llm-helm", "llm-helm"), "ghcr.io/example/llm-helm")
+
+
 class Rules(unittest.TestCase):
     def test_helm_rules_match_by_release_name(self):
         c = rows({**ON, "helm": {"podinfo": {"track": "minor"}, "ksm@monitoring": {"source": {"type": "github", "repo": "kubernetes/kube-state-metrics"}}}})

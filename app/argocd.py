@@ -6,6 +6,7 @@ repository and version each source deployed, and which objects belong to the App
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 TRACKING = "argocd.argoproj.io/tracking-id"
@@ -18,7 +19,15 @@ def is_oci(repo_url: str) -> bool:
 
 
 def oci_ref(repo_url: str, chart: str) -> str:
-    return f"{repo_url.removeprefix('oci://').rstrip('/')}/{chart}"
+    """registry/path/chart. A repoURL that already ends in the chart's name isn't given it twice."""
+    base = repo_url.removeprefix("oci://").rstrip("/")
+    return base if base.rsplit("/", 1)[-1] == chart else f"{base}/{chart}"
+
+
+def chart_label_matches(label: str, chart: str) -> bool:
+    """Whether a `helm.sh/chart: <chart>-<version>` label is this chart's: `kagent-crds-0.7.0` is
+    kagent-crds's, not kagent's."""
+    return bool(re.fullmatch(re.escape(chart) + r"-v?\d[\w.+-]*", label or ""))
 
 
 def local(app: dict) -> bool:
@@ -81,7 +90,8 @@ def helm_sources(app: dict) -> list[dict]:
             "app": f"{meta.get('namespace', '')}/{meta.get('name', '')}",
             "index": i if multi else None,
             "release": (src.get("helm") or {}).get("releaseName") or meta.get("name", ""),
-            "namespace": dest.get("namespace") or "default",
+            # Argo CD templates with helm.namespace, else the destination's; "" when neither is set
+            "namespace": (src.get("helm") or {}).get("namespace") or dest.get("namespace") or "",
             "chart": chart, "repo": src.get("repoURL") or "",
             "version": str(version or ""), "target": target, "deployed": deployed,
             "sync_status": sync.get("status") or "",

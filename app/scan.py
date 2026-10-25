@@ -82,6 +82,7 @@ class Scanner:
         # "renderers": n}, and the same entries by the (kind, namespace, name) of each object it lists.
         self.argo_apps: dict[str, dict] = {}
         self.argo_resources: dict[tuple[str, str, str], dict] = {}
+        self.argo_ids: set[str] = set()  # ids of the Argo CD release rows
 
     # ------------------------------------------------------------------ inventory
     def inventory(self) -> list[dict]:
@@ -164,7 +165,7 @@ class Scanner:
         after a move from `helm install` to Argo CD the Secret stays, stuck at the version Helm
         last installed."""
         helm = self._helm()
-        argo = self._argocd()
+        argo = self._argocd(helm)
         if not argo:
             return helm
         stale = {(c["namespace"], c["name"]): c for c in helm}
@@ -177,9 +178,10 @@ class Scanner:
                     self.chart_links[c["id"]] += self.chart_links.get(old["id"], ())
         return list(stale.values()) + argo
 
-    def _argocd(self) -> list[dict]:
+    def _argocd(self, helm: list[dict]) -> list[dict]:
         """A Helm release row per Helm chart source of the Argo CD Applications in
-        `argocd.namespaces` that deploy to this cluster. Nothing is listed unless `argocd.enabled`."""
+        `argocd.namespaces` that deploy to this cluster. Nothing is listed unless `argocd.enabled`.
+        `helm` (the release Secret rows) places a source whose Application sets no namespace."""
         acfg = self.cfg.get("argocd") or {}
         if acfg.get("enabled") is not True:
             return []
@@ -194,6 +196,9 @@ class Scanner:
         apps = [a for a in apps if argocd.local(a)]
         self.argo = {"namespaces": namespaces, "applications": len(apps), **({"errors": errors} if errors else {})}
         overrides = self.cfg.get("helm", {})
+        secret_ns: dict[str, set[str]] = {}
+        for c in helm:
+            secret_ns.setdefault(c["name"], set()).add(c["namespace"])
         out, ids = [], set()
         for app in apps:
             meta = app["metadata"]
@@ -206,6 +211,10 @@ class Scanner:
                 self.argo_resources.setdefault((r.get("kind", ""), r.get("namespace") or "", r.get("name", "")), entry)
             for s in argocd.helm_sources(app):
                 ns, name, chart = s["namespace"], s["release"], s["chart"]
+                assumed = not ns
+                if assumed:  # neither helm.namespace nor a destination namespace: where Helm had it, if unique
+                    found = secret_ns.get(name, set())
+                    ns = next(iter(found)) if len(found) == 1 else "default"
                 rid = f"helm/{ns}/{name}"
                 if rid in ids:  # two charts rendered under one release name
                     rid = f"{rid}/{chart}"
@@ -237,19 +246,23 @@ class Scanner:
                     "installed": s["version"], "installed_app": "",
                     "image": f"chart {chart}", "track": ov.get("track", "any"),
                     "source": src, "ref": ref,
-                    "note": f"Argo CD {s['app']}{state}" + (f" · {s['deployed_at'][:10]}" if s["deployed_at"] else ""),
+                    "note": f"Argo CD {s['app']}{state}" + (f" · {s['deployed_at'][:10]}" if s["deployed_at"] else "")
+                            + (f" · the Application sets no namespace, assumed {ns}" if assumed else ""),
                     **({"updated": s["deployed_at"]} if s["deployed_at"] else {}),
                     "argocd": {"application": s["app"], **({"source_index": s["index"]} if s["index"] is not None else {}),
                                "repo": s["repo"], "target_revision": s["target"], "sync_status": s["sync_status"],
-                               "deployed": s["deployed"]},
+                               "deployed": s["deployed"], **({"namespace_assumed": True} if assumed else {})},
                 })
                 entry["rows"].append((rid, name, chart))
+                self.argo_ids.add(rid)
         return out
 
     def _argo_release(self, w: dict) -> Optional[tuple[str, str, str]]:
         """(release, release row id, "argocd") for a workload an Argo CD Helm source rendered: its
         tracking-id annotation, else the Application's resource list, names the Application. When
-        the Application renders more than that one chart, the chart's own labels must say which."""
+        the Application renders more than that one chart (more charts, or git manifests too), the
+        labels Helm charts set must say which: helm.sh/chart, else app.kubernetes.io/instance; with
+        a single chart, app.kubernetes.io/managed-by: Helm is enough."""
         md = w["metadata"]
         key = argocd.tracking_app(w)
         entry = (key and self.argo_apps.get(key)) or self.argo_resources.get((w["kind"], md["namespace"], md["name"]))
@@ -257,9 +270,9 @@ class Scanner:
             return None  # not Argo CD's, or a git source's: stays a plain manifest
         rows = entry["rows"]
         labels = md.get("labels") or {}
-        by_chart = [r for r in rows if labels.get("helm.sh/chart", "").startswith(f"{r[2]}-")]
+        by_chart = [r for r in rows if argocd.chart_label_matches(labels.get("helm.sh/chart", ""), r[2])]
         by_instance = [r for r in (by_chart or rows) if labels.get("app.kubernetes.io/instance") == r[1]]
-        if len(rows) == 1 and entry["renderers"] == 1:
+        if len(rows) == 1 and (entry["renderers"] == 1 or labels.get("app.kubernetes.io/managed-by") == "Helm"):
             pick = rows[0]
         elif len(by_chart) == 1:
             pick = by_chart[0]
@@ -333,7 +346,11 @@ class Scanner:
             md = w["metadata"]
             ann = md.get("annotations", {}) or {}
             rel = ann.get("meta.helm.sh/release-name")
-            return (rel, f"helm/{ann.get('meta.helm.sh/release-namespace') or md['namespace']}/{rel}", "helm") if rel else None
+            if not rel:
+                return None
+            rid = f"helm/{ann.get('meta.helm.sh/release-namespace') or md['namespace']}/{rel}"
+            # Helm's annotations outlive a move to Argo CD; the release kept its name, so its id too
+            return rel, rid, "argocd" if rid in self.argo_ids else "helm"
 
         workloads = list(self.k8s.workloads())
         # An operator a chart installs (longhorn-manager) creates more workloads at runtime and labels

@@ -93,7 +93,8 @@ helm:
 #          kube-drift reads releases from (the old Secret of a migrated release stays behind).
 # Fix:     let kube-drift read Argo CD Applications. Each source with `chart:` becomes a Helm
 #          release row: release name from helm.releaseName (else the Application's name),
-#          namespace from spec.destination.namespace, and the version Argo CD last deployed.
+#          namespace from helm.namespace, else spec.destination.namespace (with neither, where a
+#          release Secret of that name is), and the version Argo CD last deployed.
 #          Its workloads (found by Argo CD's tracking-id annotation, else the Application's
 #          resource list) are listed under it. When a release Secret has the same name and
 #          namespace, the Argo CD row replaces it. Applications with git sources only, and ones

@@ -402,6 +402,9 @@ SPEC: dict = {
                              "is then the version it would sync to, not one that is running."},
                 "replaced_secret_version": {"type": "string", "description": "Chart version in the stale Helm release "
                                             "Secret this row replaces; absent when there is none."},
+                "namespace_assumed": {"type": "boolean", "description": "`true` when the Application sets neither "
+                                      "helm.namespace nor a destination namespace: `namespace` is then where a release "
+                                      "Secret of that name is (if only one), else `default`. Absent otherwise."},
             }},
             "release": {"type": "string", "description": "Helm-managed workload: `id` of the Helm release component "
                         "that installs it (a release Secret, or an Argo CD Helm source when `argocd.enabled`), directly or through an operator the release ships (a workload whose "
