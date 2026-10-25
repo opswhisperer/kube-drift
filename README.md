@@ -48,6 +48,7 @@ registry. Add a config file when the dashboard shows you something wrong or nois
 | On the dashboard | Add to `config.yaml` |
 |---|---|
 | A Helm release is **unknown**, or "Available" belongs to a different chart | `helm:` — where that chart is really published |
+| A chart Argo CD deploys is missing, stuck at an old version, or its workloads show as "Manifest" | `argocd:` — `enabled: true`, plus the RBAC component, see [Argo CD](#argo-cd) |
 | "Available" is a major upgrade you can't take yet | `track: major` on that image (`images:`) or release (`helm:`) |
 | An app on `latest`/`main` only says "newer image behind tag" | `probes:` — ask the app for its version over HTTP |
 | Images from your own registry show HTTP 401 | no config: a pull secret, see [Registry credentials](#registry-credentials) |
@@ -109,6 +110,36 @@ the pod restarts by itself (the ConfigMap's name includes a hash of its contents
 The same directory is where the rest of your customisation goes: another namespace
 (`namespace:`, plus a `$patch: delete` for the base's Namespace), your own image build
 (`images:`, and a patch adding `imagePullSecrets`), and an Ingress or Gateway.
+
+### Argo CD
+
+Argo CD installs Helm charts by rendering them itself (`helm template`), so it never writes the
+Helm release Secrets kube-drift reads releases from. Without help, a chart deployed only by an
+Argo CD Application isn't listed as a release, its workloads show as plain manifests, and a chart
+you moved from `helm install` to Argo CD stays at the version Helm last installed (the old
+Secret is left behind). To read Applications instead, turn it on in `config.yaml` and give
+kube-drift get/list on `applications.argoproj.io` with the optional component:
+
+```yaml
+# my-kube-drift/config.yaml
+argocd:
+  enabled: true
+  namespaces: [argocd]          # where your Application objects live; Argo CD's own first
+```
+
+```yaml
+# my-kube-drift/kustomization.yaml
+resources:
+  - https://github.com/opswhisperer/kube-drift//deploy/base?ref=main
+components:
+  - https://github.com/opswhisperer/kube-drift//deploy/components/argocd?ref=main
+```
+
+The component adds one rule to kube-drift's read-only ClusterRole; it isn't in `deploy/base`
+because Applications can carry inline Helm values, and a cluster without Argo CD has no reason
+to grant read on them. It's off by default: without `argocd.enabled`, no Application is read and
+the scan is exactly what it was. If the Applications can't be listed (no CRD, no RBAC), the
+dashboard says so next to the scan time and the release Secrets still count.
 
 Optional: a Secret named `kube-drift-credentials` in kube-drift's namespace with a
 `github-token` key raises the GitHub API limit from 60 to 5000 requests an hour, for chart and
@@ -264,8 +295,9 @@ With built-in sign-in off:
 | Cluster | `/version`; static pods in `kube-system` (etcd, kube-vip, apiserver…) | `dl.k8s.io/release/stable-<minor>.txt` and `stable.txt`; registry tags |
 | Nodes | kubelet and container runtime per node | Kubernetes stable pointer; GitHub `containerd/containerd` |
 | Helm releases | Helm v3 release Secrets (chart version + appVersion) | ArtifactHub, an OCI chart repo, or GitHub releases |
-| Manifests | every Deployment/StatefulSet/DaemonSet not owned by Helm | newest registry tag of the same shape as the running tag |
-| Helm-managed workloads | the images inside Helm releases: listed and counted under their release (click it to expand), since the chart upgrades them | same as manifests |
+| Helm releases from Argo CD (opt-in, [`argocd:`](#argo-cd)) | each Application source with `chart:`: release name from `helm.releaseName`, namespace from `helm.namespace` or the destination; the version Argo CD deployed (`status.sync.revision`, or the matching `revisions[i]` for several sources; while out of sync, the last deployment in its history). Not deployed yet: the target revision, marked "not synced yet". appVersion comes from the chart's ArtifactHub or OCI metadata. Replaces a release Secret of the same name and namespace | a Helm repository: ArtifactHub, preferring the repository the Application names; an OCI repository: its chart tags. `helm:` rules apply as for Secret releases |
+| Manifests | every Deployment/StatefulSet/DaemonSet not owned by Helm (including those of Argo CD Applications with git sources) | newest registry tag of the same shape as the running tag |
+| Helm-managed workloads | the images inside Helm releases: listed and counted under their release (click it to expand), since the chart upgrades them. For Argo CD, the workloads its `argocd.argoproj.io/tracking-id` annotation (or the Application's resource list) ties to a Helm source | same as manifests |
 
 Pinned tags are matched by shape: `v1.35.9` only considers `vX.Y.Z` tags, `9.0-alpine` only
 `X.Y-alpine`, `distroless-v1.39.1` only `distroless-vX.Y.Z`. `track: minor|major` limits the
@@ -326,7 +358,8 @@ secret data and are written with mode 600. A PVC or PV backup is the manifest, n
 - **Read-only RBAC**: `get`/`list` on what the scans read, cluster-wide. That includes Secrets:
   Helm stores releases as Secrets, and kor checks whether Secrets are used. Kubernetes RBAC
   can't limit a list to one Secret type or label. Remove `secret` from `orphans.resources` to
-  keep kor out of Secrets; the Helm scan still reads them.
+  keep kor out of Secrets; the Helm scan still reads them. Argo CD Applications are only read
+  with the optional `deploy/components/argocd`; their Helm values are never returned.
 - The dashboard and API never return Secret data — only names.
 - Runs as non-root with a read-only root filesystem and no capabilities.
 - Image and Helm rules made in the dashboard can point version lookups at any OCI registry or
@@ -391,11 +424,13 @@ app/scan.py      version scan: inventory → components → upstream versions
 app/orphans.py   orphan scan: kor, evidence, ignore rules, cleanup scripts
 app/upstream.py  registries (Docker Hub, ghcr, quay, generic v2), ArtifactHub, GitHub
 app/k8s.py       minimal Kubernetes API client, Helm release decoding
+app/argocd.py    Argo CD Applications' Helm sources and tracked objects (opt-in)
 app/overrides.py image and Helm rules made in the dashboard, the redacted config view
 app/store.py     ignores and rules on the data volume
 app/static/      the dashboard (one HTML file, no build step)
 config/          example.yaml — every config key
 deploy/base      Kustomize base: namespace, RBAC, PVC, Deployment, Service
+deploy/components/argocd  optional: RBAC to read Argo CD Applications
 tests/           unit tests, plus a snapshot of a real cluster for offline runs
 ```
 

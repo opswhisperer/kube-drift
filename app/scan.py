@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import upstream
+from . import argocd, upstream
 from .http import HttpError, get_json
+from .k8s import KubeError
 from .versions import cmp_versions, is_floating, pick_latest, satisfies, walk_up
 
 log = logging.getLogger("kube-drift.scan")
@@ -76,13 +77,19 @@ class Scanner:
         self.label_digests: set[str] = set()
         self.kube_version = ""  # the control plane's, set by inventory()
         self.chart_links: dict[str, tuple] = {}  # Helm row id -> its chart's source and home links
+        self.argo: Optional[dict] = None  # what the Argo CD lookup found, for the result; None when off
+        # Argo CD Application (as its tracking id names it) -> {"rows": [(row id, release, chart)],
+        # "renderers": n}, and the same entries by the (kind, namespace, name) of each object it lists.
+        self.argo_apps: dict[str, dict] = {}
+        self.argo_resources: dict[tuple[str, str, str], dict] = {}
+        self.argo_ids: set[str] = set()  # ids of the Argo CD release rows
 
     # ------------------------------------------------------------------ inventory
     def inventory(self) -> list[dict]:
         comps: list[dict] = []
         comps += self._cluster()
         comps += self._nodes()
-        comps += self._helm()
+        comps += self._releases()
         comps += self._workloads()
         # A helm-managed container is upgraded with its release, so it hangs off the release's row.
         releases = {c["id"] for c in comps if c["category"] == "helm"}
@@ -152,6 +159,129 @@ class Scanner:
             })
         return out
 
+    def _releases(self) -> list[dict]:
+        """Helm releases from release Secrets, plus the Helm sources of Argo CD Applications when
+        `argocd.enabled`. An Argo CD release replaces a Secret one of the same name and namespace:
+        after a move from `helm install` to Argo CD the Secret stays, stuck at the version Helm
+        last installed."""
+        helm = self._helm()
+        argo = self._argocd(helm)
+        if not argo:
+            return helm
+        stale = {(c["namespace"], c["name"]): c for c in helm}
+        for c in argo:
+            old = stale.pop((c["namespace"], c["name"]), None)
+            if old:
+                c["note"] += f" · replaces Helm release Secret ({old['installed']}, {old['note']})"
+                c["argocd"]["replaced_secret_version"] = old["installed"]
+                if old["image"] == c["image"]:  # same chart: its home and source links still apply
+                    self.chart_links[c["id"]] += self.chart_links.get(old["id"], ())
+        return list(stale.values()) + argo
+
+    def _argocd(self, helm: list[dict]) -> list[dict]:
+        """A Helm release row per Helm chart source of the Argo CD Applications in
+        `argocd.namespaces` that deploy to this cluster. Nothing is listed unless `argocd.enabled`.
+        `helm` (the release Secret rows) places a source whose Application sets no namespace."""
+        acfg = self.cfg.get("argocd") or {}
+        if acfg.get("enabled") is not True:
+            return []
+        namespaces = acfg.get("namespaces") or ["argocd"]
+        apps, errors = [], []
+        for ns in namespaces:
+            try:
+                apps += self.k8s.argo_applications(ns)
+            except KubeError as e:  # no CRD, or no RBAC: the Secret-based releases still count
+                log.warning("Argo CD Applications in %s: %s", ns, e)
+                errors.append(f"{ns}: {e}")
+        apps = [a for a in apps if argocd.local(a)]
+        self.argo = {"namespaces": namespaces, "applications": len(apps), **({"errors": errors} if errors else {})}
+        overrides = self.cfg.get("helm", {})
+        secret_ns: dict[str, set[str]] = {}
+        for c in helm:
+            secret_ns.setdefault(c["name"], set()).add(c["namespace"])
+        out, ids = [], set()
+        for app in apps:
+            meta = app["metadata"]
+            entry = {"rows": [], "renderers": argocd.renderers(app)}
+            # Argo CD names an Application by its bare name in its own namespace (the first listed
+            # that has one), and as <namespace>_<name> in any other.
+            self.argo_apps.setdefault(meta["name"], entry)
+            self.argo_apps[f"{meta['namespace']}_{meta['name']}"] = entry
+            for r in (app.get("status") or {}).get("resources") or []:
+                self.argo_resources.setdefault((r.get("kind", ""), r.get("namespace") or "", r.get("name", "")), entry)
+            for s in argocd.helm_sources(app):
+                ns, name, chart = s["namespace"], s["release"], s["chart"]
+                assumed = not ns
+                if assumed:  # neither helm.namespace nor a destination namespace: where Helm had it, if unique
+                    found = secret_ns.get(name, set())
+                    ns = next(iter(found)) if len(found) == 1 else "default"
+                rid = f"helm/{ns}/{name}"
+                if rid in ids:  # two charts rendered under one release name
+                    rid = f"{rid}/{chart}"
+                    if rid in ids:
+                        log.warning("Argo CD %s: chart %s is deployed twice as %s/%s; listing it once", s["app"], chart, ns, name)
+                        continue
+                ids.add(rid)
+                ov_key, ov = _find(overrides, f"{name}@{ns}", name, chart)
+                if argocd.is_oci(s["repo"]):
+                    default = {"type": "oci", "ref": argocd.oci_ref(s["repo"], chart)}
+                    host, repo, _, _ = upstream.split_image(default["ref"] + ":x")
+                    page = upstream.reference_url(host, repo)
+                else:
+                    default = {"type": "artifacthub-search", "chart": chart, "repo_url": s["repo"]}
+                    page = ""
+                src = ov.get("source") or default
+                self.chart_links[rid] = (s["repo"],)
+                ref = (ov.get("ref") or (src.get("type") == "github" and src.get("repo") and f"https://github.com/{src['repo']}/releases")
+                       or page)
+                if not s["deployed"]:
+                    state = f" · not synced yet, target {s['target'] or '?'}"
+                elif s["sync_status"] != "Synced":
+                    state = f" · {s['sync_status'] or 'sync status unknown'}, target {s['target'] or '?'}"
+                else:
+                    state = ""
+                out.append({**({"config_key": ov_key} if ov_key else {}),
+                    "id": rid, "category": "helm", "install": "argocd",
+                    "name": name, "namespace": ns,
+                    "installed": s["version"], "installed_app": "",
+                    "image": f"chart {chart}", "track": ov.get("track", "any"),
+                    "source": src, "ref": ref,
+                    "note": f"Argo CD {s['app']}{state}" + (f" · {s['deployed_at'][:10]}" if s["deployed_at"] else "")
+                            + (f" · the Application sets no namespace, assumed {ns}" if assumed else ""),
+                    **({"updated": s["deployed_at"]} if s["deployed_at"] else {}),
+                    "argocd": {"application": s["app"], **({"source_index": s["index"]} if s["index"] is not None else {}),
+                               "repo": s["repo"], "target_revision": s["target"], "sync_status": s["sync_status"],
+                               "deployed": s["deployed"], **({"namespace_assumed": True} if assumed else {})},
+                })
+                entry["rows"].append((rid, name, chart))
+                self.argo_ids.add(rid)
+        return out
+
+    def _argo_release(self, w: dict) -> Optional[tuple[str, str, str]]:
+        """(release, release row id, "argocd") for a workload an Argo CD Helm source rendered: its
+        tracking-id annotation, else the Application's resource list, names the Application. When
+        the Application renders more than that one chart (more charts, or git manifests too), the
+        labels Helm charts set must say which: helm.sh/chart, else app.kubernetes.io/instance; with
+        a single chart, app.kubernetes.io/managed-by: Helm is enough."""
+        md = w["metadata"]
+        key = argocd.tracking_app(w)
+        entry = (key and self.argo_apps.get(key)) or self.argo_resources.get((w["kind"], md["namespace"], md["name"]))
+        if not entry or not entry["rows"]:
+            return None  # not Argo CD's, or a git source's: stays a plain manifest
+        rows = entry["rows"]
+        labels = md.get("labels") or {}
+        by_chart = [r for r in rows if argocd.chart_label_matches(labels.get("helm.sh/chart", ""), r[2])]
+        by_instance = [r for r in (by_chart or rows) if labels.get("app.kubernetes.io/instance") == r[1]]
+        if len(rows) == 1 and (entry["renderers"] == 1 or labels.get("app.kubernetes.io/managed-by") == "Helm"):
+            pick = rows[0]
+        elif len(by_chart) == 1:
+            pick = by_chart[0]
+        elif len(by_instance) == 1:
+            pick = by_instance[0]
+        else:
+            return None
+        return pick[1], pick[0], "argocd"
+
     def _workloads(self) -> list[dict]:
         out: list[dict] = []
         ignore = self.cfg.get("ignore", [])
@@ -178,8 +308,8 @@ class Scanner:
                     if ref:
                         digests.setdefault(_image_key(ref), set()).add(iid.split("@", 1)[1])
 
-        def add_image(ns: str, name: str, kind: str, image: str, helm_release: Optional[str], note: str = "",
-                      release_ns: Optional[str] = None):
+        def add_image(ns: str, name: str, kind: str, image: str, owner: Optional[tuple[str, str, str]] = None,
+                      note: str = ""):
             host, repo, tag, pinned_digest = upstream.split_image(image)
             key = f"{host}/{repo}" if host != "docker.io" else repo.removeprefix("library/")
             icfg_key, icfg = _find(images_cfg, f"{host}/{repo}", key, repo)
@@ -191,8 +321,8 @@ class Scanner:
                 or upstream.reference_url(host, repo)
             comp = {
                 "id": f"workload/{ns}/{name}/{repo.split('/')[-1]}",
-                "category": "helm-workload" if helm_release else "manifest",
-                "install": f"helm ({helm_release})" if helm_release else "manifest",
+                "category": "helm-workload" if owner else "manifest",
+                "install": f"{owner[2]} ({owner[0]})" if owner else "manifest",
                 "name": icfg.get("name") or name, "namespace": ns, "kind": kind,
                 "image": image, "image_host": host, "image_repo": repo, "tag": tag,
                 "installed": tag, "pinned_digest": pinned_digest,
@@ -204,34 +334,44 @@ class Scanner:
             }
             if icfg_key:
                 comp["config_key"] = icfg_key
-            if helm_release:
-                comp["release"] = f"helm/{release_ns or ns}/{helm_release}"
+            if owner:
+                comp["release"] = owner[1]
             return comp
+
+        def owner_of(w: dict) -> Optional[tuple[str, str, str]]:
+            """(release, release row id, installer) of a workload a Helm chart put there. Argo CD's
+            word comes first: a workload Helm installed before the move keeps Helm's annotations."""
+            if self.argo_apps and (argo := self._argo_release(w)):
+                return argo
+            md = w["metadata"]
+            ann = md.get("annotations", {}) or {}
+            rel = ann.get("meta.helm.sh/release-name")
+            if not rel:
+                return None
+            rid = f"helm/{ann.get('meta.helm.sh/release-namespace') or md['namespace']}/{rel}"
+            # Helm's annotations outlive a move to Argo CD; the release kept its name, so its id too
+            return rel, rid, "argocd" if rid in self.argo_ids else "helm"
 
         workloads = list(self.k8s.workloads())
         # An operator a chart installs (longhorn-manager) creates more workloads at runtime and labels
         # them `<prefix>/managed-by: <operator>`; they are upgraded with that chart's release too.
         helm_by_name = {}
         for w in workloads:
-            ann = w["metadata"].get("annotations", {}) or {}
-            if ann.get("meta.helm.sh/release-name"):
-                helm_by_name[(w["metadata"]["namespace"], w["metadata"]["name"])] = (
-                    ann["meta.helm.sh/release-name"], ann.get("meta.helm.sh/release-namespace"))
+            if o := owner_of(w):
+                helm_by_name[(w["metadata"]["namespace"], w["metadata"]["name"])] = o
 
         for w in workloads:
             ns, name, kind = w["metadata"]["namespace"], w["metadata"]["name"], w["kind"]
             if any(_match(r, ns, name) for r in ignore):
                 continue
-            ann = w["metadata"].get("annotations", {}) or {}
-            helm_release = ann.get("meta.helm.sh/release-name")
-            release_ns = ann.get("meta.helm.sh/release-namespace")
+            owner = helm_by_name.get((ns, name))
             operator = None
-            if not helm_release:
+            if not owner:
                 labels = w["metadata"].get("labels", {}) or {}
                 operator = next((v for k, v in labels.items() if (k == "managed-by" or k.endswith("/managed-by"))
                                  and (ns, v) in helm_by_name and v != name), None)
                 if operator:
-                    helm_release, release_ns = helm_by_name[(ns, operator)]
+                    owner = helm_by_name[(ns, operator)]
             containers = w["spec"]["template"]["spec"].get("containers", [])
             grp = next((g for g in groups if _match(g, ns, name)), None)
             if grp:
@@ -244,9 +384,9 @@ class Scanner:
                 if any(re.search(p, c["image"]) for p in self.cfg.get("ignore_images", [])):
                     continue
                 note = c["name"] if len(containers) > 1 else ""
-                comp = add_image(ns, name, kind, c["image"], helm_release, note, release_ns)
+                comp = add_image(ns, name, kind, c["image"], owner, note)
                 if operator:
-                    comp["install"] = f"{operator} (helm {helm_release})"
+                    comp["install"] = f"{operator} ({owner[2]} {owner[0]})"
                 out.append(comp)
 
         for label, g in grouped.items():
@@ -286,12 +426,14 @@ class Scanner:
             elif t == "artifacthub":
                 self._resolve_artifacthub(comp, src["repo"], src.get("chart") or comp["image"].removeprefix("chart "))
             elif t == "artifacthub-search":
-                r = upstream.artifacthub_search(src.get("chart") or comp["image"].removeprefix("chart "),
-                                                self.chart_links.get(comp["id"], ()), comp.get("installed") or "")
+                chart = src.get("chart") or comp["image"].removeprefix("chart ")
+                r = upstream.artifacthub_search(chart, self.chart_links.get(comp["id"], ()), comp.get("installed") or "",
+                                                *([src["repo_url"]] if src.get("repo_url") else []))
                 if not r:
                     comp.update(status="unknown", latest=None, note=(comp.get("note", "") + " · chart not on ArtifactHub").strip(" ·"))
                 else:
                     self._apply_chart(comp, r)
+                    self._installed_app(comp, chart, ah_repo=r.get("repo"))
                     if r.get("ambiguous"):
                         comp["note"] = (comp.get("note", "") + f" · AH guess: {r.get('repo')}").strip(" ·")
             elif t == "github":
@@ -306,6 +448,7 @@ class Scanner:
                             status="outdated" if res["outdated"] else ("current" if res["outdated"] is False else "unknown"))
                 if comp["status"] == "outdated":
                     self._oci_chart_range(comp, host, repo, res["latest"])
+                self._installed_app(comp, repo, oci=(host, repo))
             elif t == "registry":
                 self._resolve_registry(comp)
             elif t == "none":
@@ -360,6 +503,30 @@ class Scanner:
             comp.update(status="unknown", latest=None, error=f"ArtifactHub: {repo}/{chart} not found")
         else:
             self._apply_chart(comp, r)
+            self._installed_app(comp, chart, ah_repo=repo)
+
+    def _installed_app(self, comp: dict, chart: str, ah_repo: Optional[str] = None, oci: Optional[tuple[str, str]] = None):
+        """An Argo CD release's appVersion. No release Secret records it, so it comes from where the
+        chart's versions do: ArtifactHub's page for the installed version, or the installed OCI
+        chart's own metadata. Left empty when neither says."""
+        if comp.get("install") != "argocd" or comp.get("installed_app") or not comp.get("installed"):
+            return
+        if comp.get("latest") == comp["installed"] and comp.get("latest_app"):
+            comp["installed_app"] = comp["latest_app"]
+            return
+        app = None
+        try:
+            if ah_repo:
+                app = (upstream.artifacthub_package(ah_repo, chart, comp["installed"]) or {}).get("app_version")
+            elif oci:
+                digest = self.reg.digest(*oci, comp["installed"])
+                if digest:
+                    self.label_digests.add(digest)
+                    app = self.reg.chart_meta(*oci, digest).get("app_version")
+        except Exception as e:  # noqa: BLE001 — a missing appVersion must never fail the row
+            log.info("appVersion of %s %s: %s", comp["image"], comp["installed"], e)
+        if app:
+            comp["installed_app"] = app
 
     def _project_ref(self, comp: dict, digest: Optional[str]):
         """Where to read an image's release notes when the config doesn't say: the link its own
@@ -511,6 +678,7 @@ class Scanner:
         return {
             "scanned_at": now_iso(), "duration_s": round(time.time() - t0, 1),
             "summary": summary, "components": comps,
+            **({"argocd": self.argo} if self.argo is not None else {}),
         }
 
 

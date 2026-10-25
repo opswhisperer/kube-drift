@@ -419,9 +419,10 @@ class Registry:
         return found
 
     def chart_meta(self, host: str, repo: str, digest: str) -> dict:
-        """{"kube_version": <range>} of a Helm chart pushed to an OCI registry, by manifest digest.
-        Helm stores the chart's Chart.yaml as JSON in the config blob, so the chart itself is never
-        pulled. kube_version is "" when the chart sets none; {} if it can't be read (not cached)."""
+        """{"kube_version": <range>} of a Helm chart pushed to an OCI registry, by manifest digest,
+        plus "app_version" when the chart sets one. Helm stores the chart's Chart.yaml as JSON in the
+        config blob, so the chart itself is never pulled. kube_version is "" when the chart sets
+        none; {} if it can't be read (not cached)."""
         with _labels_lock:
             if digest in _labels:
                 return _labels[digest]
@@ -430,11 +431,14 @@ class Registry:
             cfg = m.get("config") or {}
             if cfg.get("mediaType") != "application/vnd.cncf.helm.config.v1+json":
                 return {}
-            kv = self._call(host, repo, f"blobs/{cfg['digest']}").json().get("kubeVersion")
+            chart = self._call(host, repo, f"blobs/{cfg['digest']}").json()
+            kv, app = chart.get("kubeVersion"), chart.get("appVersion")
         except (HttpError, ValueError, KeyError, AttributeError) as e:
             log.info("chart metadata %s/%s@%s: %s", host, repo, digest[:19], e)
             return {}
         found = {"kube_version": kv.strip()[:200] if isinstance(kv, str) else ""}
+        if isinstance(app, str) and app.strip():
+            found["app_version"] = app.strip()[:100]
         with _labels_lock:
             _labels[digest] = found
         return found
@@ -476,9 +480,10 @@ AH = "https://artifacthub.io"
 
 
 @functools.lru_cache(maxsize=256)
-def artifacthub_package(repo: str, chart: str) -> Optional[dict]:
+def artifacthub_package(repo: str, chart: str, version: str = "") -> Optional[dict]:
+    """A chart's newest version on ArtifactHub, or the given one."""
     try:
-        p = get_json(f"{AH}/api/v1/packages/helm/{repo}/{chart}")
+        p = get_json(f"{AH}/api/v1/packages/helm/{repo}/{chart}" + (f"/{urllib.parse.quote(version)}" if version else ""))
     except HttpError as e:
         if e.status == 404:
             return None
@@ -520,11 +525,17 @@ def _publishers(pkg: dict) -> set[str]:
     return _owners(repo.get("url") or "") | ({_norm(repo["organization_name"])} if repo.get("organization_name") else set())
 
 
+def _repo_url(url: str) -> str:
+    """A chart repository URL in a comparable form: no scheme, case or trailing slash."""
+    return url.split("://", 1)[-1].rstrip("/").lower()
+
+
 @functools.lru_cache(maxsize=256)
-def artifacthub_search(chart: str, links: tuple = (), installed: str = "") -> Optional[dict]:
+def artifacthub_search(chart: str, links: tuple = (), installed: str = "", repo_url: str = "") -> Optional[dict]:
     """Find a chart by exact name. Several repositories often carry a chart of the same name
     (mirrors, forks, course material), so the candidates are ranked by evidence that one is
-    where the release came from: ArtifactHub marks it official; it's published by whoever the
+    where the release came from: it is the chart repository the release was installed from
+    (`repo_url`, which Argo CD knows and a Helm release Secret doesn't); ArtifactHub marks it official; it's published by whoever the
     installed chart's own home and source links name (`links`); it isn't older than the
     installed version; it isn't deprecated; then stars. "Verified publisher" only means the
     publisher owns their repository, so a one-star mirror has it too: it only breaks ties.
@@ -536,6 +547,9 @@ def artifacthub_search(chart: str, links: tuple = (), installed: str = "") -> Op
     if not cands:
         return None
     ours = set().union(*(_owners(link) for link in links if link))
+
+    def same_repo(p: dict) -> bool:
+        return bool(repo_url) and _repo_url((p.get("repository") or {}).get("url") or "") == _repo_url(repo_url)
 
     def official(p: dict) -> bool:
         return bool(p.get("official") or (p.get("repository") or {}).get("official"))
@@ -549,11 +563,12 @@ def artifacthub_search(chart: str, links: tuple = (), installed: str = "") -> Op
     def stars(p: dict) -> int:
         return int(p.get("stars") or 0)
 
-    cands.sort(key=lambda p: (official(p), linked(p), not behind(p), not p.get("deprecated"), stars(p),
+    cands.sort(key=lambda p: (same_repo(p), official(p), linked(p), not behind(p), not p.get("deprecated"), stars(p),
                               bool((p.get("repository") or {}).get("verified_publisher"))), reverse=True)
     best = cands[0]
     runner_up = cands[1] if len(cands) > 1 else None
-    sure = (runner_up is None or (official(best) and not official(runner_up))
+    sure = (runner_up is None or (same_repo(best) and not same_repo(runner_up))
+            or (official(best) and not official(runner_up))
             or (linked(best) and not linked(runner_up))
             or stars(best) >= max(10, 3 * stars(runner_up)))
     repo = (best.get("repository") or {}).get("name", "")

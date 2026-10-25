@@ -99,6 +99,10 @@ class K8s:
         path = f"/api/v1/namespaces/{namespace}/pods" if namespace else "/api/v1/pods"
         return list(self.items(path))
 
+    def argo_applications(self, namespace: str) -> list[dict]:
+        """Argo CD Applications in one namespace (only when `argocd.enabled`)."""
+        return list(self.items(f"/apis/argoproj.io/v1alpha1/namespaces/{namespace}/applications"))
+
     def helm_releases(self) -> list[dict]:
         """Decode Helm v3 release Secrets. Returns the newest revision per release."""
         best: dict[tuple[str, str], dict] = {}

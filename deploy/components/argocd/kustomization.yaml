@@ -1,0 +1,21 @@
+# Lets kube-drift read Argo CD Applications, for `argocd.enabled: true` in its config.
+# Adds get/list on applications.argoproj.io to the kube-drift-reader ClusterRole. Use it from
+# your overlay:
+#   components:
+#     - ../../components/argocd      # path from your overlay to deploy/components/argocd
+# A component rather than part of deploy/base: Applications can carry inline Helm values, and
+# clusters without Argo CD shouldn't grant read on them.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: kube-drift-reader
+    patch: |-
+      - op: add
+        path: /rules/-
+        value:
+          apiGroups: ["argoproj.io"]
+          resources: ["applications"]
+          verbs: ["get", "list"]
