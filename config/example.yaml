@@ -83,6 +83,31 @@ helm:
   # ArtifactHub has several "postgresql" charts; pin the one you installed:
   # db@prod: { source: { type: artifacthub, repo: bitnami, chart: postgresql } }
 
+# ── argocd ───────────────────────────────────────────────────────────────────────────────
+# Symptoms, for charts Argo CD deploys:
+#   - a release you moved from `helm install` to an Argo CD Application is stuck at the version
+#     Helm last installed, whatever Argo CD has synced since
+#   - a chart deployed only by Argo CD isn't listed under Helm releases at all
+#   - that chart's workloads show up as plain "Manifest" rows instead of under their release
+# Cause:   Argo CD renders charts with `helm template` and never writes the Helm release Secrets
+#          kube-drift reads releases from (the old Secret of a migrated release stays behind).
+# Fix:     let kube-drift read Argo CD Applications. Each source with `chart:` becomes a Helm
+#          release row: release name from helm.releaseName (else the Application's name),
+#          namespace from spec.destination.namespace, and the version Argo CD last deployed.
+#          Its workloads (found by Argo CD's tracking-id annotation, else the Application's
+#          resource list) are listed under it. When a release Secret has the same name and
+#          namespace, the Argo CD row replaces it. Applications with git sources only, and ones
+#          that deploy to another cluster, are left alone. The `helm:` rules above apply to
+#          these rows too, matched by release name.
+# Needs:   get/list on applications.argoproj.io: add deploy/components/argocd (README).
+#
+#   enabled:    true to turn it on. Default: false — no Applications are read.
+#   namespaces: where Application objects live. Argo CD's own namespace first; add others if
+#               you use Applications in any namespace. Default: [argocd]
+argocd:
+  # enabled: true
+  # namespaces: [argocd]
+
 # ── images ───────────────────────────────────────────────────────────────────────────────
 # Symptoms and fixes for containers:
 #   - "Available" is a major version you can't move to yet   → track: major (or minor)

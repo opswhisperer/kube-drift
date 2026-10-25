@@ -377,12 +377,19 @@ function refCell(c){
   return links.join('<br>') || '<span class="hint">—</span>';
 }
 function host(u){ try{ const h=new URL(u).hostname.replace(/^www\./,''); const p=new URL(u).pathname.split('/').filter(Boolean); return h==='github.com'&&p.length>=2?`${p[0]}/${p[1]}`:h; }catch{ return u; } }
+// An Argo CD release's Application, and what it deployed against what it targets.
+function argoText(a){
+  if(!a) return '';
+  return `Application ${a.application}${a.source_index!=null?`, source ${a.source_index}`:''} · `+
+    (a.deployed?(a.sync_status||'sync status unknown'):'not synced yet')+(a.target_revision?`, targets ${a.target_revision}`:'')+
+    (a.replaced_secret_version?` · replaces a stale Helm release Secret at ${a.replaced_secret_version}`:'');
+}
 function describeSource(c){
   const s=c.source||{};
   switch(s.type){
     case 'registry': return 'newest tag of the same shape in its registry';
     case 'artifacthub': return `ArtifactHub chart ${s.repo}/${s.chart||c.image.replace(/^chart /,'')}`;
-    case 'artifacthub-search': return `ArtifactHub search for “${s.chart||c.image.replace(/^chart /,'')}”`;
+    case 'artifacthub-search': return `ArtifactHub search for “${s.chart||c.image.replace(/^chart /,'')}”`+(s.repo_url?` from ${s.repo_url}`:'');
     case 'github': return `GitHub releases of ${s.repo}`;
     case 'k8s': return 'Kubernetes release channel';
     case 'oci': return `chart tags at ${s.ref}`;
@@ -403,7 +410,8 @@ function setMeta(d, noun, busy){
     (d.scanned_at?`Last ${noun} ${rel(d.scanned_at)}`:(d.scanning?'':`No ${noun} yet`))+
     (d.kor_version?`, kor ${esc(d.kor_version)}`:'')+
     (d.next_scan_at&&!d.scanning?`, next in ${until(d.next_scan_at)}`:'')+
-    (d.last_error?`. <span style="color:var(--major)">Last scan failed: ${esc(d.last_error)}</span>`:'');
+    (d.last_error?`. <span style="color:var(--major)">Last scan failed: ${esc(d.last_error)}</span>`:'')+
+    (d.argocd?.errors?.length?`. <span style="color:var(--major)">Can't read Argo CD Applications: ${esc(d.argocd.errors.join('; '))}</span>`:'');
   $('#rescan').disabled=!!d.scanning;
 }
 
@@ -473,7 +481,7 @@ function render(){
       <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
-    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
@@ -778,7 +786,7 @@ const SECTION = {
 };
 const SETTING = { cluster_name:'Cluster name', scan_interval_hours:'Version scan interval (hours)', auth:'Sign-in', probes:'Version probes',
   registries:'Registries', runtimes:'Container runtimes', static_pod_namespaces:'Static pod namespaces', ignore:'Ignored workloads',
-  ignore_images:'Ignored images', groups:'Workload groups', orphans:'Orphaned resources' };
+  ignore_images:'Ignored images', groups:'Workload groups', orphans:'Orphaned resources', argocd:'Argo CD' };
 // The dashboard row a component's rule lives under, and the key a new rule for it would use.
 function ruleKey(c){
   if(c.category==='helm') return c.name;

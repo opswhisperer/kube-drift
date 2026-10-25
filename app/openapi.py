@@ -369,6 +369,14 @@ SPEC: dict = {
                         "additionalProperties": {"type": "integer"}},
             "components": {"type": "array", "items": {"$ref": "#/components/schemas/Component"}},
             "ignore_enabled": {"type": "boolean", "description": "False when kube-drift can't save ignores."},
+            "argocd": {"type": "object", "description": "Present only when `argocd.enabled` is set in the config: "
+                       "the Argo CD Applications read for Helm releases.", "properties": {
+                "namespaces": {"type": "array", "items": {"type": "string"}, "description": "Where Applications were listed."},
+                "applications": {"type": "integer", "description": "Applications found that deploy to this cluster."},
+                "errors": {"type": "array", "items": {"type": "string"}, "description": "Namespaces whose Applications "
+                           "couldn't be listed (no Argo CD CRD, or kube-drift lacks get/list on applications.argoproj.io). "
+                           "Absent when there were none."},
+            }},
         }}]},
         "Component": {"type": "object", "description": "One installed thing and its newest upstream version.", "properties": {
             "id": {"type": "string"},
@@ -376,11 +384,27 @@ SPEC: dict = {
             "status": {"enum": ["outdated", "current", "unknown", "error"]},
             "name": {"type": "string"}, "namespace": {"type": "string", "description": "`-` for cluster-wide components."},
             "kind": {"type": "string", "description": "Workload kind (Deployment, StatefulSet, DaemonSet, StaticPod)."},
-            "install": {"type": "string", "description": "How it was installed: helm, manifest, kubeadm, static pod…"},
+            "install": {"type": "string", "description": "How it was installed: helm, argocd (a Helm chart an Argo CD "
+                        "Application deploys), manifest, kubeadm, static pod…; for a Helm-managed workload, "
+                        "`helm (<release>)` or `argocd (<release>)`."},
             "installed": {"type": "string", "description": "Installed chart version, image tag, or component version."},
-            "installed_app": {"type": "string", "description": "Helm: the chart's appVersion."},
+            "installed_app": {"type": "string", "description": "Helm: the chart's appVersion. For an Argo CD release, "
+                              "from ArtifactHub or the OCI chart's metadata; empty when neither says."},
+            "argocd": {"type": "object", "description": "Helm release deployed by Argo CD (`install: argocd`, only with "
+                       "`argocd.enabled`). Its id is `helm/<namespace>/<release>`, as for a release Secret, which it "
+                       "replaces when both exist.", "properties": {
+                "application": {"type": "string", "description": "The Application, as `<namespace>/<name>`."},
+                "source_index": {"type": "integer", "description": "Multi-source Application: which `spec.sources` entry."},
+                "repo": {"type": "string", "description": "The source's repoURL: a Helm repository or an OCI registry path."},
+                "target_revision": {"type": "string", "description": "The source's targetRevision (may be a range)."},
+                "sync_status": {"type": "string", "description": "Argo CD's sync status: Synced, OutOfSync, Unknown."},
+                "deployed": {"type": "boolean", "description": "`false` when Argo CD has never deployed it: `installed` "
+                             "is then the version it would sync to, not one that is running."},
+                "replaced_secret_version": {"type": "string", "description": "Chart version in the stale Helm release "
+                                            "Secret this row replaces; absent when there is none."},
+            }},
             "release": {"type": "string", "description": "Helm-managed workload: `id` of the Helm release component "
-                        "that installs it, directly or through an operator the release ships (a workload whose "
+                        "that installs it (a release Secret, or an Argo CD Helm source when `argocd.enabled`), directly or through an operator the release ships (a workload whose "
                         "`…/managed-by` label names one of the release's workloads); it is upgraded as part of that "
                         "release. Absent when the release isn't deployed."},
             "images": {"type": "integer", "description": "Helm release: how many workload images it installs."},

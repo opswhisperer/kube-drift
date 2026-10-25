@@ -506,6 +506,13 @@ class ChartMeta(unittest.TestCase):
             self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {"kube_version": ">=1.30.0-0"})
         self.assertEqual(self.calls, ["manifests/sha256:m", "blobs/sha256:c"])
 
+    def test_reads_app_version(self):
+        reg = Registry()
+        chart = self.chart(None)
+        chart["blobs/sha256:c"]["appVersion"] = "v2.4.1"
+        with mock.patch.object(reg, "_call", self.fake(chart)):
+            self.assertEqual(reg.chart_meta("reg.example", "charts/widget", "sha256:m"), {"kube_version": "", "app_version": "v2.4.1"})
+
     def test_no_range_cached_unreadable_not(self):
         reg = Registry()
         with mock.patch.object(reg, "_call", self.fake(self.chart(None))):

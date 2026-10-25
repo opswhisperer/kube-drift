@@ -22,6 +22,9 @@ jobs:
       - name: Render manifests
         run: |
           kubectl kustomize deploy/base > /dev/null
+          mkdir -p deploy/ci-argocd
+          printf 'resources: [../base]\ncomponents: [../components/argocd]\n' > deploy/ci-argocd/kustomization.yaml
+          kubectl kustomize deploy/ci-argocd | grep -q argoproj.io
 
   image:
     # Tags v1.2.3 publish ghcr.io/<owner>/kube-drift:1.2.3 and :latest for amd64 + arm64.

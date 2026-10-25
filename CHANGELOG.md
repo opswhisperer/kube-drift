@@ -13,6 +13,12 @@ git tags and on the GitHub releases page.
   inside Helm releases). `?status=outdated&ignored=false&top=true` lists exactly what
   `summary.outdated` counts, for dashboards such as Homepage that can show a list but not filter
   it. Without parameters the response is unchanged; an unknown parameter or value is a 400.
+- Opt-in Argo CD support (`argocd.enabled`, plus the RBAC component `deploy/components/argocd`).
+  Every Helm chart source of an Argo CD Application becomes a Helm release row with the version
+  Argo CD deployed, looked up upstream like any release, and the workloads it rendered are listed
+  under it instead of as manifests. An Argo CD release replaces a stale Helm release Secret of the
+  same name and namespace, left behind by a move from `helm install`. Rows carry
+  `install: argocd` and an `argocd` object in `GET /api/drift`; off, nothing changes.
 
 ## [0.5.2] - 2026-10-22
 
