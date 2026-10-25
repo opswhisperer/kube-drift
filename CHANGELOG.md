@@ -6,6 +6,14 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- `GET /api/drift` and `/api/drift.csv` take filters for `components`: `status` (repeatable or
+  comma-separated), `ignored=true|false` and `top=true|false` (leave out, or keep only, the images
+  inside Helm releases). `?status=outdated&ignored=false&top=true` lists exactly what
+  `summary.outdated` counts, for dashboards such as Homepage that can show a list but not filter
+  it. Without parameters the response is unchanged; an unknown parameter or value is a 400.
+
 ## [0.5.2] - 2026-10-22
 
 ### Changed

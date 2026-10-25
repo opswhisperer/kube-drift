@@ -35,7 +35,7 @@ import yaml
 from . import auth, orphans, overrides
 from .openapi import SPEC
 from .k8s import K8s
-from .scan import Scanner, apply_ignores, kube_version, now_iso
+from .scan import STATUS_ORDER, Scanner, apply_ignores, kube_version, now_iso
 from .store import Store
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -367,11 +367,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/", "/index.html"):
             self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
-        elif path == "/api/drift":
-            self._send(200, json.dumps(STATE.snapshot()).encode())
-        elif path == "/api/drift.csv":
-            self._send(200, to_csv(STATE.snapshot()).encode(), "text/csv; charset=utf-8",
-                       {"Content-Disposition": "attachment; filename=kube-drift.csv"})
+        elif path in ("/api/drift", "/api/drift.csv"):
+            try:
+                keep = drift_filter(self.path.split("?", 1)[1] if "?" in self.path else "")
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            snap = STATE.snapshot()
+            if keep:
+                snap["components"] = [c for c in snap["components"] if keep(c)]
+            if path == "/api/drift":
+                self._send(200, json.dumps(snap).encode())
+            else:
+                self._send(200, to_csv(snap).encode(), "text/csv; charset=utf-8",
+                           {"Content-Disposition": "attachment; filename=kube-drift.csv"})
         elif path == "/api/orphans":
             self._send(200, json.dumps(ORPHANS.snapshot()).encode())
         elif path == "/api/config":
@@ -605,6 +614,30 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "delete" and it["status"] == "protected":
                 skipped.append({"id": it["id"], "why": f"protected: {it.get('protected')}"})
         self._json(200, {"script": script, "skipped": skipped})
+
+
+def drift_filter(query: str):
+    """Which components GET /api/drift(.csv) keeps for its query string, as a test; None when the
+    query asks for no filter. `status` (repeatable, or comma-separated), `ignored` and `top` combine
+    with AND; `status=outdated&ignored=false&top=true` is the set `summary.outdated` counts.
+    Raises ValueError for anything else, rather than quietly returning everything."""
+    params = urllib.parse.parse_qs(query, keep_blank_values=True)
+    if unknown := sorted(set(params) - {"status", "ignored", "top"}):
+        raise ValueError(f"unknown parameter {unknown[0]!r}: use status, ignored or top")
+    statuses = {s for v in params.get("status", []) for s in v.split(",")}
+    if bad := sorted(statuses - set(STATUS_ORDER)):
+        raise ValueError(f"status: {bad[0]!r} isn't one of outdated, current, unknown, error")
+    flags = {}
+    for k in ("ignored", "top"):
+        if k in params:
+            if params[k] not in (["true"], ["false"]):
+                raise ValueError(f"{k}: true or false, given once")
+            flags[k] = params[k] == ["true"]
+    if not statuses and not flags:
+        return None
+    return lambda c: ((not statuses or c.get("status", "unknown") in statuses)
+                      and flags.get("ignored", bool(c.get("ignored"))) == bool(c.get("ignored"))
+                      and flags.get("top", not c.get("release")) == (not c.get("release")))
 
 
 def to_csv(snap: dict) -> str:
