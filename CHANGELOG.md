@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-28
+
 ### Added
 
 - **Renovate** (opt-in, `renovate:` in the config): POST Renovate's report (`reportType: file`) to
@@ -92,7 +94,8 @@ git tags and on the GitHub releases page.
 - `registries:` entries are now needed only for `insecure: true`. `auth_env` still works and
   still wins for its host, so existing configs keep working unchanged.
 
-[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/opswhisperer/kube-drift/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/opswhisperer/kube-drift/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/opswhisperer/kube-drift/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/opswhisperer/kube-drift/compare/v0.5.0...v0.5.1
