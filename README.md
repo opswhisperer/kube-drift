@@ -8,7 +8,9 @@ A dashboard for the two kinds of drift a long-lived Kubernetes cluster collects:
   found by [kor](https://github.com/yonahd/kor) and cross-checked so you can tell real leftovers
   from things kor can't see being used.
 
-It runs in the cluster, rescans on a timer, and is **read-only**: it never changes the cluster.
+It runs in the cluster, rescans on a timer, and **never changes the cluster**. With [Renovate](#renovate)
+connected, it shows which updates Renovate already has and can approve one: that ticks a box in a
+Dependency Dashboard issue on your forge, never anything in the cluster.
 Cleanup is a kubectl script it writes for you to review and run.
 
 > [!NOTE]
@@ -287,6 +289,51 @@ With built-in sign-in off:
 - **Not enough on their own:** an unauthenticated Ingress or LoadBalancer, an IP allowlist, or
   a hostname nobody knows. A VPN without sign-in is fine only if everyone on it should see your
   cluster's inventory.
+
+### Renovate
+
+If [Renovate](https://docs.renovatebot.com/) keeps your manifests and chart pins current, kube-drift can be
+its inbox: each row it can match says what Renovate has for it, and an update waiting for approval gets an
+**Upgrade** button. Every row with an image or a chart shows one of:
+
+| On the row | Means |
+|---|---|
+| **Upgrade to v…** | Renovate waits for approval in the repository's Dependency Dashboard. The button ticks that box (as you would on the forge), and Renovate opens the PR on its next run |
+| **Renovate PR #n** | the PR is open (a link) |
+| **Renovate: …** | Renovate has the branch planned but waits (schedule, rate limit), or you just approved it |
+| expanded: *tracked* / *not tracked by Renovate* | Renovate watches it with nothing pending, or doesn't know it at all (a gap in its config) |
+
+**1. Turn it on.** In the config:
+
+```yaml
+renovate:
+  enabled: true
+  forge:
+    type: forgejo                  # forgejo, gitea or github
+    url: https://git.example.com   # github: https://github.com (default), or your GitHub Enterprise URL
+  dashboard_title: "Dependency Dashboard"   # Renovate's dependencyDashboardTitle, if you changed it
+```
+
+**2. Send it Renovate's report after every run.** Run Renovate with `reportType: file` (and `reportPath`),
+then POST that file to kube-drift with an API key (or through your authenticating gateway). In a CI job:
+
+```bash
+renovate   # with RENOVATE_REPORT_TYPE=file RENOVATE_REPORT_PATH=/tmp/renovate-report.json
+curl -fsS -H "Authorization: Bearer $KUBE_DRIFT_API_KEY" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/renovate-report.json https://kube-drift.example.com/api/renovate/report
+```
+
+A report for some repositories (a run limited with `repositories`) replaces just those; the others stay.
+
+**3. Optional: approving.** Put a token that may edit issues in the repositories Renovate manages into
+`kube-drift-credentials`, key `renovate-forge-token` (`RENOVATE_FORGE_TOKEN`). Without it the rows still
+show Renovate's state, and approving stays on the forge. Use a bot account with issue write only: kube-drift
+edits nothing else. Want the PR at once instead of at Renovate's next scheduled run? Start Renovate from a
+workflow on the dashboard issue's `edited` event.
+
+**Matching:** an image by name (with or without its registry, so `quay.io/org/app` is Renovate's `org/app`)
+and tag; a chart by name and installed version. When the same image and tag are in several repositories,
+kube-drift takes the one the row's namespace is synced from, if [`argocd:`](#argo-cd) is on.
 
 ## Version drift
 

@@ -70,6 +70,8 @@ SPEC: dict = {
         {"name": "config", "description": "The config in effect, and image and Helm rules kept by kube-drift."},
         {"name": "service", "description": "Scans, health and this document."},
         {"name": "auth", "description": "Sign-in and API keys; only when built-in sign-in (`auth.oidc`) is on."},
+        {"name": "renovate", "description": "Renovate's report in, update approvals out (to the forge); only with "
+                                            "`renovate.enabled` in the config. Off: 404."},
     ],
     # Either one; open endpoints say `security: []`. With built-in sign-in off, the gateway decides.
     "security": [{"apiKey": []}, {"session": []}],
@@ -124,6 +126,39 @@ SPEC: dict = {
                 "200": {"description": "Unignored", "content": {"application/json": {"schema": {"type": "object", "properties": {
                     "unignored": {"type": "integer"}}}}}},
                 "400": _ERROR, "415": _ERROR, "503": _ERROR},
+        }},
+        "/api/renovate/report": {"post": {
+            "tags": ["renovate"], "operationId": "postRenovateReport",
+            "summary": "Take Renovate's report",
+            "description": "The report file Renovate writes with `reportType: file` (`reportPath`), as it is. kube-drift "
+                           "keeps each repository's dependencies and branches; a report for some repositories replaces "
+                           "just those. Rows of `GET /api/drift` then carry `renovate`. Up to 64 MiB.",
+            "requestBody": _body({"type": "object", "required": ["repositories"], "properties": {
+                "repositories": {"type": "object", "description": "Renovate's report: repository → packageFiles, branches.",
+                                 "additionalProperties": {"type": "object"}}}}),
+            "responses": {
+                "200": {"description": "Taken", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "repositories": {"type": "integer"}, "dependencies": {"type": "integer"},
+                    "awaiting_approval": {"type": "integer", "description": "Updates waiting in a Dependency Dashboard."},
+                    "received_at": {"type": "string", "format": "date-time"}}}}}},
+                "400": _ERROR, "404": _ERROR, "415": _ERROR},
+        }},
+        "/api/renovate/approve": {"post": {
+            "tags": ["renovate"], "operationId": "approveRenovateUpdate",
+            "summary": "Approve an update Renovate is waiting on",
+            "description": "Ticks the branch's box in the repository's open Dependency Dashboard issue on the forge "
+                           "(`renovate.forge`), as a person would; Renovate opens the PR on its next run. Use "
+                           "`renovate.repo` and `renovate.branch` of a row with `renovate.state: approve`. Nothing in "
+                           "the cluster changes.",
+            "requestBody": _body({"type": "object", "required": ["repo", "branch"], "properties": {
+                "repo": {"type": "string", "description": "`owner/name`"}, "branch": {"type": "string"}}}),
+            "responses": {
+                "200": {"description": "Approved (or it already was)", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "status": {"enum": ["approved", "already approved"]},
+                    "issue": {"type": "string", "description": "The dashboard issue's URL."}}}}}},
+                "400": _ERROR, "404": _ERROR, "409": {**_ERROR, "description": "That branch isn't waiting for approval."},
+                "415": _ERROR, "502": _ERROR,
+                "503": {**_ERROR, "description": "No forge URL or token configured."}},
         }},
         "/api/orphans": {"get": {
             "tags": ["orphans"], "operationId": "getOrphans",
@@ -369,9 +404,16 @@ SPEC: dict = {
                         "additionalProperties": {"type": "integer"}},
             "components": {"type": "array", "items": {"$ref": "#/components/schemas/Component"}},
             "ignore_enabled": {"type": "boolean", "description": "False when kube-drift can't save ignores."},
+            "renovate": {"type": "object", "description": "Present only with `renovate.enabled`.", "properties": {
+                "received_at": {"type": ["string", "null"], "format": "date-time", "description": "The last report; null before the first."},
+                "repositories": {"type": "integer"},
+                "can_approve": {"type": "boolean", "description": "A forge URL and token are configured."}}},
             "argocd": {"type": "object", "description": "Present only when `argocd.enabled` is set in the config: "
                        "the Argo CD Applications read for Helm releases.", "properties": {
                 "namespaces": {"type": "array", "items": {"type": "string"}, "description": "Where Applications were listed."},
+                "namespace_repos": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}},
+                                    "description": "Per destination namespace, the git repositories its Applications sync "
+                                                   "from (chart sources left out). Renovate uses it to tell whose update a row is."},
                 "applications": {"type": "integer", "description": "Applications found that deploy to this cluster."},
                 "errors": {"type": "array", "items": {"type": "string"}, "description": "Namespaces whose Applications "
                            "couldn't be listed (no Argo CD CRD, or kube-drift lacks get/list on applications.argoproj.io). "
@@ -417,6 +459,7 @@ SPEC: dict = {
             "latest_any": {"type": ["string", "null"], "description": "Newest version overall, when it differs."},
             "latest_app": {"type": ["string", "null"], "description": "Helm: appVersion of the latest chart."},
             "ignored": {"$ref": "#/components/schemas/UpdateIgnored"},
+            "renovate": {"$ref": "#/components/schemas/RenovateState"},
             "incompatible": {"type": "string", "description": "Why `latest` can't be installed on this cluster, e.g. the "
                              "chart's `kubeVersion` range excludes the control plane's version. Absent when it can, or "
                              "when kube-drift can't tell."},
@@ -435,6 +478,21 @@ SPEC: dict = {
             "probe_source": {"type": ["object", "null"]}, "first_party": {"type": "boolean"}, "loose_suffix": {"type": "boolean"},
             "ref_overridden": {"type": "boolean", "description": "ref was set in config or by a probe, not discovered."},
             "config_key": {"type": "string", "description": "The `images` or `helm` rule it matched (`GET /api/config`); absent when none did."}, "updated": {"type": "string"}, "checked_at": {"type": "string", "format": "date-time"},
+        }},
+        "RenovateState": {"type": "object", "description": "Images and charts only, once a Renovate report came in "
+                          "(`renovate.enabled`).", "properties": {
+            "state": {"enum": ["approve", "pr", "pending", "tracked", "untracked"],
+                      "description": "`approve`: an update waits in the Dependency Dashboard (`POST /api/renovate/approve`). "
+                                     "`pr`: Renovate opened its PR. `pending`: Renovate has the branch planned (`result` "
+                                     "says why it waits). `tracked`: Renovate watches it, nothing to do. `untracked`: "
+                                     "no Renovate dependency is this image or chart."},
+            "repo": {"type": "string"}, "dependency": {"type": "string"}, "file": {"type": "string"},
+            "branch": {"type": "string"}, "title": {"type": "string", "description": "The PR title, as in the dashboard."},
+            "new": {"type": "string", "description": "The version the update moves to."},
+            "update_type": {"type": "string"}, "result": {"type": "string", "description": "Renovate's branch result."},
+            "pr": {"type": "integer"}, "pr_url": {"type": "string"},
+            "skipped": {"type": "string", "description": "Renovate's skipReason for the dependency."},
+            "also_in": {"type": "array", "items": {"type": "string"}, "description": "Other repositories with the same image and tag."},
         }},
         "UpdateIgnored": {"type": "object", "description": "Present only while the component's update is ignored. "
                           "It ends at the first condition met; ended ignores are removed.", "properties": {

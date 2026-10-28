@@ -15,7 +15,10 @@ config), POD_NAMESPACE (kube-drift's own namespace, protected), SCAN_INTERVAL_HO
 STATE_FILE (/tmp/drift.json), DATA_DIR (/data: ignores, last orphan scan, image label cache), KOR_BIN (kor), KOR_KUBECONFIG,
 GITHUB_TOKEN (optional), LOCAL_REGISTRY_AUTH (user:pass, optional),
 KUBE_API / KUBE_TOKEN (out-of-cluster dev, e.g. `kubectl proxy`),
-OIDC_CLIENT_SECRET (or the env var auth.oidc.client_secret_env names), SESSION_SECRET (optional).
+OIDC_CLIENT_SECRET (or the env var auth.oidc.client_secret_env names), SESSION_SECRET (optional),
+RENOVATE_FORGE_TOKEN (or the env var renovate.forge.token_env names: approving updates, optional).
+Renovate (renovate.py, opt-in): its report comes in through POST /api/renovate/report; approving an update
+ticks its box in the repository's Dependency Dashboard on the forge (git), never the cluster.
 """
 from __future__ import annotations
 
@@ -32,7 +35,7 @@ from pathlib import Path
 
 import yaml
 
-from . import auth, orphans, overrides
+from . import auth, orphans, overrides, renovate
 from .openapi import SPEC
 from .k8s import K8s
 from .scan import STATUS_ORDER, Scanner, apply_ignores, kube_version, now_iso
@@ -49,12 +52,14 @@ CLUSTER = {"name": os.environ.get("CLUSTER_NAME", "")}  # set from config in mai
 CONFIG: dict = {}  # the config file as loaded, set in main(); dashboard image/Helm rules go on top (overrides.py)
 VERSION = os.environ.get("KUBE_DRIFT_VERSION") or "dev"  # baked into the image at build time (Dockerfile)
 MAX_BODY = 1 << 20
+MAX_REPORT = 64 << 20  # a Renovate report for many repositories is big
 # Swagger UI for /docs: bundled into the image (Dockerfile); from source, the same version on a CDN.
 SWAGGER_UI_VERSION = "5.33.1"
 SWAGGER_DIR = STATIC / "swagger-ui"
 SWAGGER_ASSETS = {"swagger-ui-bundle.js": "application/javascript", "swagger-ui.css": "text/css"}
 API_LINKS = '</openapi.json>; rel="service-desc", </docs>; rel="service-doc"'  # RFC 8631
 AUTH: auth.Auth | None = None  # set from config in main(); None = no built-in auth (gateway does it)
+RENOVATE: renovate.Store | None = None  # set in main() when the config has renovate (enabled)
 OPEN = {"/healthz", "/readyz", "/openapi.json", "/docs", "/icon.svg"}  # reachable without signing in
 PAGES = {"/", "/index.html"}  # signed-out people are sent to sign in; API callers get 401
 
@@ -104,6 +109,12 @@ class State:
             }
             result = self.result or {"scanned_at": None, "summary": {}, "components": []}
         result, _ = apply_ignores(result, store.update_ignores())
+        if RENOVATE:
+            doc, rcfg = RENOVATE.snapshot(), CONFIG.get("renovate") or {}
+            result = {**result, "components": renovate.annotate(result.get("components", []), doc, rcfg,
+                                                                 (result.get("argocd") or {}).get("namespace_repos"))}
+            meta["renovate"] = {"received_at": doc.get("received_at"), "repositories": len(doc.get("repos", {})),
+                                "can_approve": renovate.can_approve(rcfg)}
         return {**meta, **result}
 
     def find(self, ids: list[str]) -> dict[str, dict]:
@@ -440,11 +451,15 @@ class Handler(BaseHTTPRequestHandler):
                    "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule,
                    "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates,
                    "/api/config/rules": self._set_config_rule, "/api/config/rules/delete": self._remove_config_rule,
-                   "/api/keys": self._create_key, "/api/keys/delete": self._revoke_key}
+                   "/api/keys": self._create_key, "/api/keys/delete": self._revoke_key,
+                   "/api/renovate/report": self._renovate_report, "/api/renovate/approve": self._renovate_approve}
         if path not in actions:
             self._send(404, b'{"error":"not found"}')
             return
         if path.startswith("/api/keys") and not self._keys_allowed():
+            return
+        if path in ("/api/renovate/report", "/api/renovate/approve") and not RENOVATE:
+            self._json(404, {"error": "Renovate support is off: add renovate (enabled: true) to the config"})
             return
         # JSON only: a cross-site form or text/plain POST can't reach the ignore endpoints
         # without a CORS preflight, which this server never answers.
@@ -464,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self) -> dict | None:
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > MAX_BODY:
+            if n > (MAX_REPORT if self.path.split("?", 1)[0] == "/api/renovate/report" else MAX_BODY):
                 raise ValueError("body too large")
             body = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(body, dict):
@@ -563,6 +578,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(200, {"unignored": ORPHANS.store.unignore_updates(body["ids"])})
 
+    # ----- Renovate: its report in, approvals out (to the forge, never the cluster) -----
+    def _renovate_report(self, body: dict):
+        try:
+            res = RENOVATE.ingest(body)
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        log.info("Renovate report from %s: %s", self._actor() or "?", res)
+        self._json(200, res)
+
+    def _renovate_approve(self, body: dict):
+        repo, branch = str(body.get("repo") or ""), str(body.get("branch") or "")
+        try:
+            res = renovate.approve(CONFIG.get("renovate") or {}, repo, branch)
+        except renovate.ApproveError as e:
+            self._json(e.status, {"error": str(e)})
+            return
+        log.info("Renovate: %s approved %s in %s", self._actor() or "?", branch, repo)
+        self._json(200, res)
+
     # ----- image and Helm rules (kube-drift's own state, laid over the config file) -----
     def _actor(self) -> str:
         who = self.who or {}
@@ -658,6 +693,11 @@ def main():
     cfg = load_config()
     CONFIG.update(cfg)
     AUTH = auth.from_config(cfg, DATA_DIR)  # a broken auth config stops startup rather than run open
+    global RENOVATE
+    if (cfg.get("renovate") or {}).get("enabled"):
+        RENOVATE = renovate.Store(DATA_DIR)
+        log.info("Renovate support on: report at POST /api/renovate/report; approving %s",
+                 "on" if renovate.can_approve(cfg["renovate"]) else "off (no forge url or token)")
     CLUSTER["name"] = os.environ.get("CLUSTER_NAME") or str(cfg.get("cluster_name") or "")
     threading.Thread(target=scan_loop, args=(cfg,), daemon=True, name="scan").start()
     ORPHANS.context = (cfg.get("orphans") or {}).get("kubectl_context")

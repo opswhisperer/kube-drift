@@ -194,7 +194,16 @@ class Scanner:
                 log.warning("Argo CD Applications in %s: %s", ns, e)
                 errors.append(f"{ns}: {e}")
         apps = [a for a in apps if argocd.local(a)]
-        self.argo = {"namespaces": namespaces, "applications": len(apps), **({"errors": errors} if errors else {})}
+        # the git repositories each destination namespace is synced from (Renovate: whose update is a row's)
+        ns_repos: dict[str, set] = {}
+        for a in apps:
+            dest = ((a.get("spec") or {}).get("destination") or {}).get("namespace") or ""
+            spec = a.get("spec") or {}
+            for s in (spec.get("sources") or [spec.get("source") or {}]):
+                if s and s.get("repoURL") and not s.get("chart") and dest:
+                    ns_repos.setdefault(dest, set()).add(s["repoURL"])
+        self.argo = {"namespaces": namespaces, "applications": len(apps), **({"errors": errors} if errors else {}),
+                     **({"namespace_repos": {k: sorted(v) for k, v in sorted(ns_repos.items())}} if ns_repos else {})}
         overrides = self.cfg.get("helm", {})
         secret_ns: dict[str, set[str]] = {}
         for c in helm:

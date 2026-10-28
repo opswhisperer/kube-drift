@@ -219,6 +219,22 @@ runtimes:
 # static_pod_namespaces: [kube-system]
 
 
+# ═════════════════════════════════════════════════════════════════════════════ RENOVATE
+# Symptom: you can't tell from here whether Renovate already has an update, and approving one means
+#          finding its repository's Dependency Dashboard on the forge.
+# Fix:     send kube-drift Renovate's report after every run (reportType: file, then POST it to
+#          /api/renovate/report — README: Renovate). Rows then show Renovate's state, and with a
+#          forge token (Secret kube-drift-credentials, key renovate-forge-token) an Upgrade button
+#          ticks the update's box in its dashboard. It never changes the cluster.
+# renovate:
+#   enabled: true
+#   forge:
+#     type: forgejo                     # forgejo, gitea or github
+#     url: https://git.example.com      # github: https://github.com (the default) or a GitHub Enterprise URL
+#     # token_env: RENOVATE_FORGE_TOKEN # the env var holding the token (default)
+#   dashboard_title: Dependency Dashboard   # your Renovate dependencyDashboardTitle
+
+
 # ═════════════════════════════════════════════════════════════════════ ORPHANED RESOURCES
 orphans:
   enabled: true

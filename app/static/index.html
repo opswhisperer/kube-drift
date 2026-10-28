@@ -125,6 +125,8 @@ tr.detail dd.v{font-size:12px}
 .ver{overflow-wrap:anywhere}
 .ver .from{color:var(--muted)}
 .ver .lbl{color:var(--muted);font-size:12.5px;margin-right:6px}
+.reno{margin-top:4px;font-size:12.5px}
+.reno button{padding:1px 8px;font-size:12px}
 .ver .to{color:var(--c);font-weight:650}
 .ver .arrow{color:var(--faint);margin:0 5px}
 .imgs-out{color:var(--minor)}
@@ -362,7 +364,42 @@ function versionCell(c){
   if(c.ignored) sub.push(`<span class="ignored-note">${esc(ignoreText(c.ignored))}</span>`);
   if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':
     c.digest_error?`registry said ${esc(c.digest_error)}`:c.digest_current===true?'image matches its tag, no comparable version found':'no comparable version found');
-  return h+(sub.filter(Boolean).length?subLine(sub):'');
+  return h+(sub.filter(Boolean).length?subLine(sub):'')+renoLine(c);
+}
+// Renovate (renovate.enabled): an update waiting for approval gets an Upgrade button (it ticks the box in the
+// repository's Dependency Dashboard), an open PR its link. Tracked and untracked rows say so only when expanded.
+function renoLine(c){
+  const r=c.renovate; if(!r || r.state==='tracked' || r.state==='untracked') return '';
+  if(r.state==='approve') return `<div class="reno">${state.data.renovate?.can_approve
+    ? `<button data-reno="${esc(c.id)}" title="${esc(r.title||'')} · ${esc(r.repo)}">Upgrade to ${esc(r.new)}…</button>`
+    : `<span class="hint">Renovate: waiting for approval in ${esc(r.repo)}</span>`}</div>`;
+  if(r.state==='pr') return `<div class="reno"><a href="${esc(r.pr_url)}" target="_blank" rel="noopener">Renovate PR #${esc(String(r.pr))}</a></div>`;
+  return `<div class="reno"><span class="hint">Renovate: ${esc(r.result||'pending')}</span></div>`;
+}
+function renoText(r){
+  if(!r) return '';
+  const where=r.repo?` in ${r.repo}${r.file?` (${r.file})`:''}`:'';
+  const also=r.also_in?.length?` · same image also in ${r.also_in.join(', ')}`:'';
+  switch(r.state){
+    case 'approve': return `update to ${r.new} waiting for approval${where} · branch ${r.branch}${also}`;
+    case 'pr': return `PR #${r.pr} open${where}${also}`;
+    case 'pending': return `${r.result||'pending'}${where} · branch ${r.branch}${also}`;
+    case 'tracked': return `tracked${where}, nothing pending${r.skipped?` (skipped: ${r.skipped})`:''}${also}`;
+    default: return 'not tracked by Renovate';
+  }
+}
+async function approveReno(id){
+  const c=(state.data.components||[]).find(x=>x.id===id), r=c?.renovate; if(!r) return;
+  const res=await modal({title:`Upgrade ${c.name} to ${r.new}`, ok:'Approve',
+    body:`<p>Approves <b>${esc(r.title||r.branch)}</b> in <code>${esc(r.repo)}</code>: kube-drift ticks its box in the repository's Dependency Dashboard, and Renovate opens the PR. Nothing in the cluster changes until that PR is merged.</p>`});
+  if(!res.ok) return;
+  const out=await call('/api/renovate/approve',{repo:r.repo, branch:r.branch});
+  toast(out.status==='approved'?`Approved: Renovate opens the PR in ${esc(r.repo)}`:'It was already approved');
+  // until Renovate's next report says the PR is open, show it as approved (no second click)
+  (state.data.components||[]).filter(x=>x.renovate?.repo===r.repo && x.renovate?.branch===r.branch)
+    .forEach(x=>{ x.renovate.state='pending'; x.renovate.result='approved, PR coming'; });
+  render();
+  setTimeout(load,60000);
 }
 // "Ignored until Oct 20 or until something newer than 1.12.4 is out — note": an ignore ends at its first condition met.
 function ignoreText(ig){
@@ -456,6 +493,8 @@ function render(){
   if(ign && !state.showIgn) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${ign} ignored</span>`);
   if(inc && !state.showInc) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${inc} incompatible update${inc===1?'':'s'} hidden</span>`);
   if(imgRel) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${imgRel} more Helm release${imgRel===1?' ships':'s ship'} outdated images</span>`);
+  const reno=new Set(all.filter(c=>c.renovate?.state==='approve').map(c=>c.renovate.repo+' '+c.renovate.branch)).size;
+  if(reno) $('#strip .headline').insertAdjacentHTML('beforeend',`<span class="note">${reno} Renovate update${reno===1?'':'s'} waiting for approval</span>`);
   // namespaces
   const nsSel=$('#ns'); const cur=nsSel.value; const nss=[...new Set(all.map(c=>c.namespace))].sort();
   nsSel.innerHTML='<option value="">All namespaces</option>'+nss.map(n=>`<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(nsLabel(n))}</option>`).join('');
@@ -481,7 +520,7 @@ function render(){
       <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
-    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Renovate',renoText(c.renovate)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
       .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
@@ -529,6 +568,7 @@ document.addEventListener('click',e=>{
   const tile=e.target.closest('[data-t]'); if(tile){ const t=tile.dataset.t; state.tile=state.tile===t?'':t; render(); refocus(`#strip .headline [data-t="${t}"]`); return; }
   const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); refocus(`th[data-k="${th.dataset.k}"] button`); return; }
   const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); refocus(`tr.grp[data-g="${CSS.escape(g)}"]`); return; }
+  const rb=e.target.closest('[data-reno]'); if(rb){ approveReno(rb.dataset.reno).catch(err=>toast('Approve failed: '+esc(err.message))); return; }
   const ib=e.target.closest('[data-ign]'); if(ib){ ignoreUpdate(ib.dataset.ign).catch(err=>toast('Ignore failed: '+esc(err.message))); return; }
   const cb=e.target.closest('[data-cfg]'); if(cb){ run(()=>configure(cb.dataset.cfg)); return; }
   const ub=e.target.closest('[data-unign]'); if(ub){ call('/api/drift/unignore',{ids:[ub.dataset.unign]}).then(()=>{ toast('Showing its updates again'); return load(); })

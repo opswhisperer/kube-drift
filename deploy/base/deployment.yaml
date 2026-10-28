@@ -62,6 +62,14 @@ spec:
                   name: kube-drift-credentials
                   key: github-token
                   optional: true
+            # Only with renovate.forge in the config: a forge token that may edit issues, for approving updates
+            # (it ticks the box in a repository's Renovate Dependency Dashboard). Same Secret, key renovate-forge-token.
+            - name: RENOVATE_FORGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kube-drift-credentials
+                  key: renovate-forge-token
+                  optional: true
             # Only with built-in sign-in (auth.oidc in the config): the OIDC client's secret.
             - name: OIDC_CLIENT_SECRET
               valueFrom:

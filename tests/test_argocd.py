@@ -152,7 +152,8 @@ class Releases(unittest.TestCase):
                                        "target_revision": "6.*", "sync_status": "Synced", "deployed": True})
         self.assertEqual((r["note"], r["updated"]), ("Argo CD argocd/podinfo · 2026-10-20", "2026-10-20T08:00:00Z"))
         self.assertEqual(self.k8s.listed, ["argocd", "team-a"])
-        self.assertEqual(self.sc.argo, {"namespaces": ["argocd", "team-a"], "applications": 8})
+        self.assertEqual({k: v for k, v in self.sc.argo.items() if k != "namespace_repos"},
+                         {"namespaces": ["argocd", "team-a"], "applications": 8})
 
     def test_multi_source_with_values_ref(self):
         mine = [c for c in self.c.values() if (c.get("argocd") or {}).get("application") == "argocd/monitoring-stack"]
