@@ -10,7 +10,9 @@ check against the fixture cluster.
 - **kube-drift never writes to the cluster.** RBAC is get/list only (`deploy/base/rbac.yaml`) and
   the README promises it. Cleanup is a kubectl script the user runs (`orphans.commands`) —
   don't add API calls that create, patch or delete cluster objects. POST endpoints may only
-  change kube-drift's own state (ignores, rules, rescans).
+  change kube-drift's own state (ignores, rules, rescans) — with one exception outside the cluster:
+  `POST /api/renovate/approve` edits a Renovate Dependency Dashboard issue on the forge (ticks one
+  box), with the forge token the user configured. Nothing else may write to the forge.
 - **Never return Secret data** from the API or dashboard — names only.
 - **Authentication is optional and off by default** (`app/auth.py`). With `auth.oidc` in the
   config, people sign in through OIDC and scripts use API keys; without it, kube-drift must sit

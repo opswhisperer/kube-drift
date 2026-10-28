@@ -6,6 +6,17 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- **Renovate** (opt-in, `renovate:` in the config): POST Renovate's report (`reportType: file`) to
+  `/api/renovate/report` after each run, and every image or chart row says what Renovate has for it:
+  an update waiting for approval, an open PR (linked), planned, tracked, or not tracked at all. With a
+  forge token (`renovate-forge-token` in `kube-drift-credentials`), an **Upgrade** button approves the
+  update: `POST /api/renovate/approve` ticks its box in the repository's Dependency Dashboard on
+  Forgejo, Gitea or GitHub. Nothing in the cluster changes. The scan's `argocd` part now lists, per
+  namespace, the git repositories its Applications sync from (`namespace_repos`), which tells whose
+  update a row is when several repositories pin the same image.
+
 ## [0.6.0] - 2026-10-25
 
 ### Added
