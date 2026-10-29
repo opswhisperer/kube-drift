@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-28
+
 ### Fixed
 
 - **Renovate approve on Forgejo/Gitea, for real:** it always failed with "has no open issue titled …".
@@ -111,7 +113,8 @@ git tags and on the GitHub releases page.
 - `registries:` entries are now needed only for `insecure: true`. `auth_env` still works and
   still wins for its host, so existing configs keep working unchanged.
 
-[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/opswhisperer/kube-drift/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/opswhisperer/kube-drift/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/opswhisperer/kube-drift/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/opswhisperer/kube-drift/compare/v0.5.2...v0.6.0
