@@ -238,14 +238,15 @@ def approve(cfg: dict, repo: str, branch: str) -> dict:
         listing, size = f"{api}/repos/{repo}/issues?state=open&type=issues&limit=50", 50
     else:
         raise ApproveError(503, f"renovate.forge.type {f['type']!r}: forgejo, gitea or github")
-    # GitHub lists pull requests as issues too, marked by the `pull_request` key
+    # GitHub lists pull requests as issues too, marked by a `pull_request` object; Forgejo/Gitea send
+    # `"pull_request": null` on every plain issue, so test the value, not the key
     dash = []
     for page in range(1, 21):   # 20 pages: 1,000 (GitHub 2,000) open issues
         try:
             issues = http.request(f"{listing}&page={page}", headers=auth).json()
         except http.HttpError as e:
             raise ApproveError(502, f"listing issues of {repo}: HTTP {e.status}") from e
-        dash = [i for i in issues if i.get("title") == f["dashboard_title"] and "pull_request" not in i]
+        dash = [i for i in issues if i.get("title") == f["dashboard_title"] and i.get("pull_request") is None]
         if dash or len(issues) < size:
             break
     if not dash:
