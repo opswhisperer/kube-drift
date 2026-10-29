@@ -26,7 +26,6 @@ import logging
 import os
 import re
 import threading
-import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -231,19 +230,24 @@ def approve(cfg: dict, repo: str, branch: str) -> dict:
     if f["type"] == "github":
         api = "https://api.github.com" if f["url"] == "https://github.com" else f"{f['url']}/api/v3"
         auth = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
-        listing = f"{api}/repos/{repo}/issues?state=open&per_page=100"
+        listing, size = f"{api}/repos/{repo}/issues?state=open&per_page=100", 100
     elif f["type"] in ("forgejo", "gitea"):
         api = f"{f['url']}/api/v1"
         auth = {"Authorization": f"token {tok}"}
-        listing = f"{api}/repos/{repo}/issues?state=open&type=issues&limit=50&q=" + urllib.parse.quote(f["dashboard_title"])
+        # no q= search: Forgejo answers it from its issue indexer, which can miss an open issue (seen on 15.0)
+        listing, size = f"{api}/repos/{repo}/issues?state=open&type=issues&limit=50", 50
     else:
         raise ApproveError(503, f"renovate.forge.type {f['type']!r}: forgejo, gitea or github")
-    try:
-        issues = http.request(listing, headers=auth).json()
-    except http.HttpError as e:
-        raise ApproveError(502, f"listing issues of {repo}: HTTP {e.status}") from e
     # GitHub lists pull requests as issues too, marked by the `pull_request` key
-    dash = [i for i in issues if i.get("title") == f["dashboard_title"] and "pull_request" not in i]
+    dash = []
+    for page in range(1, 21):   # 20 pages: 1,000 (GitHub 2,000) open issues
+        try:
+            issues = http.request(f"{listing}&page={page}", headers=auth).json()
+        except http.HttpError as e:
+            raise ApproveError(502, f"listing issues of {repo}: HTTP {e.status}") from e
+        dash = [i for i in issues if i.get("title") == f["dashboard_title"] and "pull_request" not in i]
+        if dash or len(issues) < size:
+            break
     if not dash:
         raise ApproveError(404, f"{repo} has no open issue titled {f['dashboard_title']!r}")
     issue = dash[0]

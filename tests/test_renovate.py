@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -142,6 +143,7 @@ class FakeForge(BaseHTTPRequestHandler):
     issues: list = []
     patched: list = []
     seen_auth: list = []
+    gets: list = []
 
     def log_message(self, *a):
         pass
@@ -156,7 +158,11 @@ class FakeForge(BaseHTTPRequestHandler):
 
     def do_GET(self):
         FakeForge.seen_auth.append(self.headers.get("Authorization"))
-        self._send(200, FakeForge.issues)
+        FakeForge.gets.append(self.path)
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        size = int((qs.get("limit") or qs.get("per_page") or ["30"])[0])
+        page = int((qs.get("page") or ["1"])[0])
+        self._send(200, FakeForge.issues[(page - 1) * size:page * size])
 
     def do_PATCH(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -169,7 +175,7 @@ class Approve(unittest.TestCase):
         FakeForge.issues = [{"number": 3, "title": "Some bug", "body": "", "html_url": "x"},
                             {"number": 1, "title": "Renovate: dependency dashboard", "body": DASHBOARD,
                              "html_url": "https://git.example.com/acme/shop/issues/1"}]
-        FakeForge.patched, FakeForge.seen_auth = [], []
+        FakeForge.patched, FakeForge.seen_auth, FakeForge.gets = [], [], []
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeForge)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.cfg = {"forge": {"type": "forgejo", "url": f"http://127.0.0.1:{self.srv.server_address[1]}",
@@ -190,6 +196,14 @@ class Approve(unittest.TestCase):
         self.assertIn("- [ ] <!-- approve-all-pending-prs -->", body)   # nothing else changed
         self.assertEqual(body.replace("- [x] <!-- approve-branch=renovate/example-web-1.x", "- [ ] <!-- approve-branch=renovate/example-web-1.x"), DASHBOARD)
         self.assertEqual(FakeForge.seen_auth[0], "token t0ken")
+
+    def test_dashboard_on_a_later_page_without_search(self):
+        # Forgejo's q= search comes from its issue indexer, which can miss the dashboard: list and page instead
+        FakeForge.issues = [{"number": n, "title": f"bug {n}", "body": ""} for n in range(10, 70)] + FakeForge.issues[1:]
+        self.assertEqual(renovate.approve(self.cfg, "acme/shop", "renovate/example-web-1.x")["status"], "approved")
+        self.assertEqual([urllib.parse.parse_qs(urllib.parse.urlsplit(g).query)["page"] for g in FakeForge.gets], [["1"], ["2"]])
+        self.assertFalse(any("q=" in g for g in FakeForge.gets))
+        self.assertEqual(FakeForge.patched[0][0], "/api/v1/repos/acme/shop/issues/1")
 
     def test_already_approved_and_not_waiting(self):
         self.assertEqual(renovate.approve(self.cfg, "acme/shop", "renovate/python-3.x")["status"], "already approved")

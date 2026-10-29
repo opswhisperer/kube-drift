@@ -6,6 +6,13 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Renovate approve on Forgejo/Gitea:** finding the Dependency Dashboard no longer uses the issue search
+  (`q=`), which Forgejo answers from its issue indexer and which can miss an open issue ("has no open issue
+  titled …" although it is there). kube-drift now pages through the open issues and matches the title exactly,
+  on GitHub too.
+
 ## [0.7.0] - 2026-10-28
 
 ### Added
