@@ -6,6 +6,14 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Renovate approve on Forgejo/Gitea, for real:** it always failed with "has no open issue titled …".
+  Forgejo and Gitea send `"pull_request": null` on every plain issue, and kube-drift skipped any issue
+  with a `pull_request` key (meant for GitHub, which lists PRs as issues). Now only issues whose
+  `pull_request` has a value are skipped. 0.7.1 blamed Forgejo's issue search for this; the search was
+  not the cause (its paging change stays).
+
 ## [0.7.1] - 2026-10-28
 
 ### Fixed

@@ -197,6 +197,14 @@ class Approve(unittest.TestCase):
         self.assertEqual(body.replace("- [x] <!-- approve-branch=renovate/example-web-1.x", "- [ ] <!-- approve-branch=renovate/example-web-1.x"), DASHBOARD)
         self.assertEqual(FakeForge.seen_auth[0], "token t0ken")
 
+    def test_forgejo_issues_carry_pull_request_null(self):
+        # Forgejo/Gitea send "pull_request": null on every plain issue (GitHub omits the key)
+        FakeForge.issues = [dict(i, pull_request=None) for i in FakeForge.issues]
+        FakeForge.issues.append({"number": 8, "title": "Renovate: dependency dashboard", "body": "",
+                                 "pull_request": {"merged": False}})
+        self.assertEqual(renovate.approve(self.cfg, "acme/shop", "renovate/example-web-1.x")["status"], "approved")
+        self.assertEqual(FakeForge.patched[0][0], "/api/v1/repos/acme/shop/issues/1")
+
     def test_dashboard_on_a_later_page_without_search(self):
         # Forgejo's q= search comes from its issue indexer, which can miss the dashboard: list and page instead
         FakeForge.issues = [{"number": n, "title": f"bug {n}", "body": ""} for n in range(10, 70)] + FakeForge.issues[1:]
