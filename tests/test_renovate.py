@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -140,6 +141,21 @@ class Annotate(unittest.TestCase):
                          "https://github.com/acme/shop/blob/trunk/k8s/web.yaml")
         self.assertEqual(renovate.file_url(gh, "acme/shop", "k8s/web.yaml", ""), "")   # branch unknown: no link
 
+    def test_rows_carry_when_the_repository_was_read(self):
+        at = self.store.snapshot()["repos"]["acme/shop"]["at"]
+        self.assertEqual(self.r("workload/shop/web/web", "shop")["checked_at"], at)
+        self.assertNotIn("checked_at", self.r("workload/shop/cache/cache", "shop"))   # untracked: no repository
+
+    def test_behind_is_only_an_outdated_row_renovate_read_earlier(self):
+        row = {**self.rows["workload/shop/vault/vault@shop"], "status": "outdated", "checked_at": "2026-01-02T00:00:00+00:00"}
+        row["renovate"] = {**row["renovate"], "checked_at": "2026-01-01T00:00:00+00:00"}
+        self.assertTrue(renovate.behind(row))
+        # Renovate read it after this check: its silence is an answer, not a gap
+        self.assertFalse(renovate.behind({**row, "renovate": {**row["renovate"], "checked_at": "2026-01-03T00:00:00+00:00"}}))
+        self.assertFalse(renovate.behind({**row, "status": "current", "images_outdated": 0}))
+        # an update already waiting needs no run
+        self.assertFalse(renovate.behind({**row, "renovate": {**row["renovate"], "state": "approve"}}))
+
     def test_no_report_changes_nothing(self):
         self.assertIs(renovate.annotate(ROWS, {"received_at": None, "repos": {}}, CFG, NS_REPOS), ROWS)
 
@@ -153,10 +169,10 @@ DASHBOARD = """This issue lists Renovate updates.
  - [ ] <!-- approve-all-pending-prs -->Create all pending approval PRs at once
 """
 
-
 class FakeForge(BaseHTTPRequestHandler):
     issues: list = []
     patched: list = []
+    posted: list = []
     seen_auth: list = []
     gets: list = []
 
@@ -179,6 +195,13 @@ class FakeForge(BaseHTTPRequestHandler):
         page = int((qs.get("page") or ["1"])[0])
         self._send(200, FakeForge.issues[(page - 1) * size:page * size])
 
+    def do_POST(self):
+        FakeForge.seen_auth.append(self.headers.get("Authorization"))
+        FakeForge.posted.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_PATCH(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeForge.patched.append((self.path, body["body"]))
@@ -190,7 +213,7 @@ class Approve(unittest.TestCase):
         FakeForge.issues = [{"number": 3, "title": "Some bug", "body": "", "html_url": "x"},
                             {"number": 1, "title": "Renovate: dependency dashboard", "body": DASHBOARD,
                              "html_url": "https://git.example.com/acme/shop/issues/1"}]
-        FakeForge.patched, FakeForge.seen_auth, FakeForge.gets = [], [], []
+        FakeForge.patched, FakeForge.posted, FakeForge.seen_auth, FakeForge.gets = [], [], [], []
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeForge)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.cfg = {"forge": {"type": "forgejo", "url": f"http://127.0.0.1:{self.srv.server_address[1]}",
@@ -304,11 +327,96 @@ class Endpoints(unittest.TestCase):
         code, res = self.post("/api/renovate/approve", {"repo": "acme/shop", "branch": "renovate/example-web-1.x"})
         self.assertEqual(code, 503)   # no forge token
 
+    def test_recheck_replaces_the_row(self):
+        self.post("/api/renovate/report", report())
+        fresh = {**next(c for c in ROWS if c["id"] == "workload/shop/cache/cache"),
+                 "status": "outdated", "latest": "7.1.0", "checked_at": "2026-10-03T01:00:00+00:00"}
+
+        class FakeScanner:
+            def __init__(self, *a, **kw):
+                pass
+
+            def recheck(self, ids):
+                return [dict(fresh)] if fresh["id"] in ids else []
+
+        with unittest.mock.patch.object(main, "Scanner", FakeScanner), unittest.mock.patch.object(main, "K8s", object):
+            code, res = self.post("/api/drift/recheck", {"ids": [fresh["id"], "workload/shop/gone/gone"]})
+        self.assertEqual((code, res["rechecked"], res["missing"]), (200, [fresh["id"]], ["workload/shop/gone/gone"]))
+        self.assertNotIn("renovate", res)   # nothing configured to start a run with
+        with urllib.request.urlopen(self.base + "/api/drift") as r:
+            d = json.loads(r.read())
+        row = next(c for c in d["components"] if c["id"] == fresh["id"])
+        self.assertEqual((row["status"], row["latest"]), ("outdated", "7.1.0"))
+        self.assertEqual(d["summary"]["outdated"], 1)   # counted again, not left over from the scan
+
+    def test_recheck_wants_at_most_25_ids(self):
+        code, res = self.post("/api/drift/recheck", {"ids": [f"id/{i}" for i in range(26)]})
+        self.assertEqual(code, 400)
+        self.assertIn("1..25", res["error"])
+
     def test_off_is_404(self):
         main.RENOVATE = None
         code, res = self.post("/api/renovate/report", report())
         self.assertEqual(code, 404)
         self.assertIn("renovate", res["error"])
+
+
+
+class Trigger(unittest.TestCase):
+    """renovate.trigger: asking the forge to run Renovate for some repositories."""
+
+    def setUp(self):
+        FakeForge.patched, FakeForge.posted, FakeForge.seen_auth, FakeForge.gets = [], [], [], []
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeForge)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.base = {"forge": {"type": "forgejo", "url": f"http://127.0.0.1:{self.srv.server_address[1]}",
+                               "token_env": "TEST_RENOVATE_TOKEN"}}
+        os.environ["TEST_RENOVATE_TOKEN"] = "t0ken"
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        os.environ.pop("TEST_RENOVATE_TOKEN", None)
+
+    def cfg(self, **over):
+        return {**self.base, "trigger": {"repo": "acme/renovate", "inputs": {"dryRun": "none"}, **over}}
+
+    def test_starts_one_run_for_several_repositories(self):
+        res = renovate.trigger(self.cfg(), ["acme/shop", "acme/platform"])
+        self.assertEqual(res["status"], "started")
+        path, body = FakeForge.posted[0]
+        self.assertEqual(path, "/api/v1/repos/acme/renovate/actions/workflows/renovate.yml/dispatches")
+        self.assertEqual(body, {"ref": "main", "inputs": {"dryRun": "none", "repos": "acme/platform,acme/shop"}})
+
+    def test_input_names_and_workflow_come_from_the_config(self):
+        renovate.trigger(self.cfg(workflow="bot.yaml", ref="trunk", repos_input="only"), ["acme/shop"])
+        path, body = FakeForge.posted[0]
+        self.assertEqual(path, "/api/v1/repos/acme/renovate/actions/workflows/bot.yaml/dispatches")
+        self.assertEqual((body["ref"], body["inputs"]["only"]), ("trunk", "acme/shop"))
+
+    def test_its_own_token_may_differ_from_the_approving_one(self):
+        os.environ["TEST_TRIGGER_TOKEN"] = "other"
+        try:
+            renovate.trigger(self.cfg(token_env="TEST_TRIGGER_TOKEN"), ["acme/shop"])
+            self.assertEqual(FakeForge.seen_auth[-1], "token other")
+        finally:
+            os.environ.pop("TEST_TRIGGER_TOKEN", None)
+
+    def test_refuses_what_it_cannot_send(self):
+        for cfg, repos in ((self.cfg(), ["not a repo"]), (self.cfg(), []),
+                           (self.cfg(repo="nope"), ["acme/shop"]), (dict(self.base), ["acme/shop"])):
+            with self.assertRaises(renovate.ForgeError):
+                renovate.trigger(cfg, repos)
+        self.assertEqual(FakeForge.posted, [])
+
+    def test_can_trigger_needs_repo_and_token(self):
+        self.assertTrue(renovate.can_trigger(self.cfg()))
+        self.assertFalse(renovate.can_trigger(self.base))
+        os.environ.pop("TEST_RENOVATE_TOKEN")
+        try:
+            self.assertFalse(renovate.can_trigger(self.cfg()))
+        finally:
+            os.environ["TEST_RENOVATE_TOKEN"] = "t0ken"
 
 
 if __name__ == "__main__":

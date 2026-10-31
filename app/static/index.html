@@ -383,7 +383,7 @@ function renoLine(c){
   if(r.state==='tracked'||r.state==='untracked'){
     if(c.status!=='outdated') return '';
     return `<div class="reno"><span class="hint">Renovate: ${r.state==='tracked'
-      ? `tracked in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}, nothing pending`
+      ? `tracked in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}, ${renoQuiet(c,r,true)}`
       : chartNote(c)||`not tracking this ${c.category==='helm'?'chart':'image'}`}</span></div>`;
   }
   return `<div class="reno"><span class="hint">Renovate: ${esc(r.result||'pending')}</span></div>`;
@@ -397,6 +397,18 @@ function chartNote(c){
 }
 // The Renovate line of an expanded row. The repository and its package file are links when the forge
 // is configured (renovate.forge.url); the file also needs the default branch, which a report brings in.
+// Renovate tracks the row and wants nothing. Whether that means anything depends on when its run read
+// that repository: before this row was checked, it hasn't seen what we see, and its silence says nothing.
+function renoQuiet(c,r,short){
+  const out=c.status==='outdated'||c.images_outdated;
+  if(!r.checked_at) return 'nothing pending';
+  if(!out) return `nothing pending (looked ${rel(r.checked_at)})`;
+  if(r.checked_at < (c.checked_at||''))
+    return short ? `last looked ${rel(r.checked_at)}, before this check`
+                 : `but its last look at that repository was ${rel(r.checked_at)}, before this check found ${esc(c.latest||'the update')}`;
+  return short ? `nothing pending, and it looked ${rel(r.checked_at)}: its own rules hold this back`
+               : `and it looked ${rel(r.checked_at)}, after this check: nothing pending, so its rules are holding the update back`;
+}
 function renoText(c){
   const r=c.renovate; if(!r) return '';
   const where=r.repo?` in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}`:'';
@@ -405,10 +417,25 @@ function renoText(c){
     case 'approve': return `update to ${esc(r.new)} waiting for approval${where} · branch ${esc(r.branch)}${also}`;
     case 'pr': return `${link(r.pr_url,'PR #'+r.pr)} open${where}${also}`;
     case 'pending': return `${esc(r.result||'pending')}${where} · branch ${esc(r.branch)}${also}`;
-    case 'tracked': return `tracked${where}, nothing pending${r.skipped?` (skipped: ${esc(r.skipped)})`:''}${also}`;
+    case 'tracked': return `tracked${where}, ${renoQuiet(c,r)}${r.skipped?` (skipped: ${esc(r.skipped)})`:''}${also}`;
     default: return chartNote(c)||'not tracked by Renovate';
   } })();
   return {html};
+}
+// One row looked up again now. Renovate is asked to look as well when its answer is older than ours
+// (the server decides that); until it reports back, the row keeps the state it has.
+async function recheck(id){
+  const btn=document.querySelector(`[data-chk="${CSS.escape(id)}"]`);
+  if(btn){ btn.disabled=true; btn.textContent='Checking…'; }
+  try{
+    const out=await call('/api/drift/recheck',{ids:[id]});
+    const r=out.renovate;
+    toast(out.missing?.length ? 'That row is no longer in the cluster: it goes on the next scan'
+      : r?.status==='started' ? `Checked · Renovate asked to look at ${esc(r.repositories.join(', '))}, which takes a minute`
+      : r?.status==='failed' ? `Checked · Renovate not asked: ${esc(r.error)}`
+      : 'Checked');
+  }catch(e){ toast('Check failed: '+esc(e.message)); }
+  finally{ await load(); }
 }
 async function approveReno(id){
   const c=(state.data.components||[]).find(x=>x.id===id), r=c?.renovate; if(!r) return;
@@ -554,8 +581,9 @@ function render(){
       .filter(([,v])=>v?.html??v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${v?.html??esc(v)}</dd>`).join('');
     const canIgn=d.ignore_enabled && !c.release && (c.ignored || c.status==='outdated' || c.images_outdated);
     const canCfg=d.ignore_enabled && !!ruleKey(c);
-    const acts=!canIgn&&!canCfg?'':`<div class="dacts">${!canIgn?'':c.ignored?`<button data-unign="${esc(c.id)}">Stop ignoring</button>`:`<button data-ign="${esc(c.id)}">Ignore this update…</button>`}`+
-      (canCfg?`<button data-cfg="${esc(c.id)}" title="Set its track, where newer versions come from, its link…">Configure…</button>`:'')+'</div>';
+    const acts=`<div class="dacts">${!canIgn?'':c.ignored?`<button data-unign="${esc(c.id)}">Stop ignoring</button>`:`<button data-ign="${esc(c.id)}">Ignore this update…</button>`}`+
+      (canCfg?`<button data-cfg="${esc(c.id)}" title="Set its track, where newer versions come from, its link…">Configure…</button>`:'')+
+      `<button data-chk="${esc(c.id)}" title="Read the cluster and ask upstream again, now, instead of waiting for the next scan">Check now</button></div>`;
     return row+`<tr class="detail"><td colspan="4"><dl>${dl}</dl>${acts}</td></tr>`+ks.map(k=>rowHtml(k,true)).join('');
   };
   $('#rows').innerHTML = !rows.length? `<tr><td colspan="4" class="empty">${d.scanned_at?'Nothing matches these filters.':'Waiting for the first scan.'}</td></tr>`
@@ -597,6 +625,7 @@ document.addEventListener('click',e=>{
   const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); refocus(`th[data-k="${th.dataset.k}"] button`); return; }
   const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); refocus(`tr.grp[data-g="${CSS.escape(g)}"]`); return; }
   const rb=e.target.closest('[data-reno]'); if(rb){ approveReno(rb.dataset.reno).catch(err=>toast('Approve failed: '+esc(err.message))); return; }
+  const kb=e.target.closest('[data-chk]'); if(kb){ recheck(kb.dataset.chk); return; }
   const ib=e.target.closest('[data-ign]'); if(ib){ ignoreUpdate(ib.dataset.ign).catch(err=>toast('Ignore failed: '+esc(err.message))); return; }
   const cb=e.target.closest('[data-cfg]'); if(cb){ run(()=>configure(cb.dataset.cfg)); return; }
   const ub=e.target.closest('[data-unign]'); if(ub){ call('/api/drift/unignore',{ids:[ub.dataset.unign]}).then(()=>{ toast('Showing its updates again'); return load(); })

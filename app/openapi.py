@@ -117,6 +117,30 @@ SPEC: dict = {
                     "missing": {"type": "array", "items": {"type": "string"}, "description": "Ids not in the current scan."}}}}}},
                 "400": _ERROR, "415": _ERROR, "503": _ERROR},
         }},
+        "/api/drift/recheck": {"post": {
+            "tags": ["versions"], "operationId": "recheckComponents",
+            "summary": "Look a few components up again now",
+            "description": (
+                "Reads the cluster and asks these components' upstream again, without waiting for the next scan, and "
+                "replaces their rows in the last scan's result. For the whole dashboard use `POST /api/rescan`.\n\n"
+                "When `renovate.trigger` is configured, a component Renovate tracks whose repository Renovate last "
+                "read before this check also starts a Renovate run for that repository (one run for all of them). "
+                "Pass `renovate: false` to skip that. Renovate's own report comes back on its own; this never waits "
+                "for it, and nothing in the cluster is changed."),
+            "requestBody": _body({"type": "object", "required": ["ids"], "properties": {
+                "ids": {"type": "array", "minItems": 1, "maxItems": 25, "items": {"type": "string"},
+                        "description": "Component ids, as in Component.id."},
+                "renovate": {"type": "boolean", "default": True, "description": "False: don't start a Renovate run."}}}),
+            "responses": {
+                "200": {"description": "Checked", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "rechecked": {"type": "array", "items": {"type": "string"}},
+                    "missing": {"type": "array", "items": {"type": "string"}, "description": "Ids no longer in the cluster."},
+                    "renovate": {"type": "object", "description": "Only when a Renovate run could be asked for.", "properties": {
+                        "status": {"enum": ["started", "nothing to ask about", "failed"]},
+                        "repositories": {"type": "array", "items": {"type": "string"}},
+                        "workflow": {"type": "string"}, "error": {"type": "string"}}}}}}}},
+                "400": _ERROR, "409": _ERROR, "415": _ERROR},
+        }},
         "/api/drift/unignore": {"post": {
             "tags": ["versions"], "operationId": "unignoreUpdates",
             "summary": "Show components' updates again",
@@ -406,8 +430,13 @@ SPEC: dict = {
             "ignore_enabled": {"type": "boolean", "description": "False when kube-drift can't save ignores."},
             "renovate": {"type": "object", "description": "Present only with `renovate.enabled`.", "properties": {
                 "received_at": {"type": ["string", "null"], "format": "date-time", "description": "The last report; null before the first."},
+                "oldest_at": {"type": "string", "format": "date-time", "description": "The run that read the "
+                              "least recently read repository. A report covering some repositories leaves the rest as "
+                              "they were, so this, not received_at, says how current the whole picture is."},
                 "repositories": {"type": "integer"},
-                "can_approve": {"type": "boolean", "description": "A forge URL and token are configured."}}},
+                "can_approve": {"type": "boolean", "description": "A forge URL and token are configured."},
+                "can_trigger": {"type": "boolean", "description": "`renovate.trigger` names a workflow and a token "
+                                "is set, so a recheck can ask Renovate to read a repository again."}}},
             "argocd": {"type": "object", "description": "Present only when `argocd.enabled` is set in the config: "
                        "the Argo CD Applications read for Helm releases.", "properties": {
                 "namespaces": {"type": "array", "items": {"type": "string"}, "description": "Where Applications were listed."},
@@ -488,6 +517,9 @@ SPEC: dict = {
                                      "says why it waits). `tracked`: Renovate watches it, nothing to do. `untracked`: "
                                      "no Renovate dependency is this image or chart."},
             "repo": {"type": "string"}, "dependency": {"type": "string"}, "file": {"type": "string"},
+            "checked_at": {"type": "string", "format": "date-time", "description": "When the Renovate run that said "
+                           "this read the repository. Older than the component's `checked_at` means Renovate has not "
+                           "seen what this scan saw, so `tracked` says nothing about whether an update is coming."},
             "repo_url": {"type": "string", "description": "The repository on the forge (`renovate.forge.url`); absent without one."},
             "file_url": {"type": "string", "description": "`file` on the forge, on the repository's default branch. Absent "
                          "until a report has come in while a forge token was set, since the branch is read from the forge."},
