@@ -260,6 +260,7 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
     <input type="search" id="q" placeholder="Search name, image or version" aria-label="search">
     <button id="showign" aria-pressed="false" title="Updates you chose to ignore for a while" hidden></button>
     <button id="showinc" aria-pressed="false" title="Updates this cluster can't install, such as a chart that needs a newer Kubernetes" hidden></button>
+    <button id="showcur" aria-pressed="false" title="Components already on their newest version. Hidden by default, so the list is what needs attention" hidden></button>
     <span class="hint" id="count"></span>
   </div>
   <div class="tablewrap">
@@ -321,8 +322,8 @@ dialog .row{display:flex;flex-direction:row-reverse;gap:8px}
 <div class="toast" id="toast" hidden></div>
 <script>
 const $ = s => document.querySelector(s);
-const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', showInc:false, showIgn:false, shut:new Set(), sort:'status', asc:true, open:new Set() };
-try{ state.group=localStorage.getItem('kd.group')||''; state.showInc=localStorage.getItem('kd.showinc')==='1'; state.showIgn=localStorage.getItem('kd.showign')==='1'; }catch{}
+const state = { data:null, cat:'', ns:'', q:'', tile:'', group:'', showInc:false, showIgn:false, showCur:false, shut:new Set(), sort:'status', asc:true, open:new Set() };
+try{ state.group=localStorage.getItem('kd.group')||''; state.showInc=localStorage.getItem('kd.showinc')==='1'; state.showIgn=localStorage.getItem('kd.showign')==='1'; state.showCur=localStorage.getItem('kd.showcur')==='1'; }catch{}
 const ost = { data:null, view:'versions', tile:'', kind:'', ns:'', q:'', showIgn:false, sort:'status', asc:true, sel:new Set() };
 const CAT = { cluster:'Cluster', node:'Node', helm:'Helm release', manifest:'Manifest', 'helm-workload':'Helm image' };
 // Worst first: what you'd act on, then what kube-drift couldn't check, then what's fine.
@@ -369,19 +370,34 @@ function versionCell(c){
   return h+(sub.filter(Boolean).length?subLine(sub):'')+renoLine(c);
 }
 // Renovate (renovate.enabled): an update waiting for approval gets an Upgrade button (it ticks the box in the
-// repository's Dependency Dashboard), an open PR its link. Tracked and untracked rows say so only when expanded.
+// repository's Dependency Dashboard), an open PR its link. A row that is behind upstream with neither of those
+// says why — tracked with nothing pending, or out of Renovate's sight — so a missing button is never a mystery.
+// A current row stays quiet, and so does one Renovate has no say over at all (the cluster and its nodes).
 function renoLine(c){
-  const r=c.renovate; if(!r || r.state==='tracked' || r.state==='untracked') return '';
+  const r=c.renovate; if(!r) return '';
   if(r.state==='approve') return `<div class="reno">${state.data.renovate?.can_approve
     ? `<button data-reno="${esc(c.id)}" title="${esc(r.title||'')} · ${esc(r.repo)}">Upgrade to ${esc(r.new)}…</button>`
     : `<span class="hint">Renovate: waiting for approval in ${link(r.repo_url,r.repo)}</span>`}</div>`;
   if(r.state==='pr') return `<div class="reno"><a href="${esc(r.pr_url)}" target="_blank" rel="noopener">Renovate PR #${esc(String(r.pr))}</a></div>`;
+  if(r.state==='tracked'||r.state==='untracked'){
+    if(c.status!=='outdated') return '';
+    return `<div class="reno"><span class="hint">Renovate: ${r.state==='tracked'
+      ? `tracked in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}, nothing pending`
+      : chartNote(c)||`not tracking this ${c.category==='helm'?'chart':'image'}`}</span></div>`;
+  }
   return `<div class="reno"><span class="hint">Renovate: ${esc(r.result||'pending')}</span></div>`;
+}
+// An image inside a Helm release moves when the chart moves, so its own row is in no Renovate file. Point at
+// the chart, and at the repository the chart's version is pinned in when Renovate tracks that.
+function chartNote(c){
+  const p=c.release&&(state.data.components||[]).find(x=>x.id===c.release); if(!p) return '';
+  const pr=p.renovate||{};
+  return `shipped by the ${esc(p.name)} chart${pr.repo?`, tracked in ${link(pr.repo_url,pr.repo)}`:''}`;
 }
 // The Renovate line of an expanded row. The repository and its package file are links when the forge
 // is configured (renovate.forge.url); the file also needs the default branch, which a report brings in.
-function renoText(r){
-  if(!r) return '';
+function renoText(c){
+  const r=c.renovate; if(!r) return '';
   const where=r.repo?` in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}`:'';
   const also=r.also_in?.length?` · same image also in ${r.also_in.map(x=>esc(x)).join(', ')}`:'';
   const html=(()=>{ switch(r.state){
@@ -389,7 +405,7 @@ function renoText(r){
     case 'pr': return `${link(r.pr_url,'PR #'+r.pr)} open${where}${also}`;
     case 'pending': return `${esc(r.result||'pending')}${where} · branch ${esc(r.branch)}${also}`;
     case 'tracked': return `tracked${where}, nothing pending${r.skipped?` (skipped: ${esc(r.skipped)})`:''}${also}`;
-    default: return 'not tracked by Renovate';
+    default: return chartNote(c)||'not tracked by Renovate';
   } })();
   return {html};
 }
@@ -478,6 +494,10 @@ function render(){
   const gib=$('#showign'); gib.hidden=!ign; gib.setAttribute('aria-pressed',state.showIgn);
   gib.textContent=state.showIgn?'Hide ignored':`Show ${ign} ignored`;
   const top=all.filter(c=>!c.release);
+  // Up to date is the bulk of the list and the part nobody came to read, so it starts hidden.
+  const upto=top.filter(c=>c.status==='current' && !c.images_outdated).length;
+  const cub=$('#showcur'); cub.hidden=!upto; cub.setAttribute('aria-pressed',state.showCur);
+  cub.textContent=state.showCur?'Hide up to date':`Show ${upto} up to date`;
   const out=top.filter(c=>c.status==='outdated').length; $('#cnt-versions').textContent=out||''; $('#cnt-versions').classList.toggle('hot',out>0);
   // Helm-managed containers are listed under their release (expand it), not on their own.
   const kids=new Map(); all.forEach(c=>{ if(c.release){ if(!kids.has(c.release)) kids.set(c.release,[]); kids.get(c.release).push(c); } });
@@ -510,6 +530,8 @@ function render(){
     if(state.ns && c.namespace!==state.ns) return false;
     if(state.tile==='outdated'){ if(c.status!=='outdated' && !c.images_outdated) return false; }
     else if(state.tile && sev(c)!==state.tile) return false;
+    // Picking a tile is asking for exactly those rows, so it overrides the hiding.
+    if(!state.showCur && !state.tile && c.status==='current' && !c.images_outdated) return false;
     if(state.q && !hay(c).includes(state.q) && !(state.cat? [] : kids.get(c.id)||[]).some(k=>hay(k).includes(state.q))) return false;
     return true;
   });
@@ -525,7 +547,7 @@ function render(){
       <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
-    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Renovate',renoText(c.renovate)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
+    const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Renovate',renoText(c)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
       .filter(([,v])=>v?.html??v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${v?.html??esc(v)}</dd>`).join('');
@@ -605,6 +627,7 @@ async function ignoreUpdate(id){
   await load();
 }
 $('#showinc').addEventListener('click',()=>{ state.showInc=!state.showInc; try{ localStorage.setItem('kd.showinc',state.showInc?'1':''); }catch{} render(); refocus('#showinc'); });
+$('#showcur').addEventListener('click',()=>{ state.showCur=!state.showCur; try{ localStorage.setItem('kd.showcur',state.showCur?'1':''); }catch{} render(); refocus('#showcur'); });
 $('#q').addEventListener('input',e=>{ state.q=e.target.value.trim().toLowerCase(); render(); });
 $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; await fetch('/api/rescan?scope='+(ost.view==='orphans'?'orphans':'versions'),{method:'POST'}); setTimeout(()=>{load();loadO();},1500); });
 
