@@ -186,6 +186,7 @@ class Scanner:
         if acfg.get("enabled") is not True:
             return []
         namespaces = acfg.get("namespaces") or ["argocd"]
+        ui = str(acfg.get("url") or "").rstrip("/")   # argocd.url: link each row to its Application
         apps, errors = [], []
         for ns in namespaces:
             try:
@@ -259,6 +260,7 @@ class Scanner:
                             + (f" · the Application sets no namespace, assumed {ns}" if assumed else ""),
                     **({"updated": s["deployed_at"]} if s["deployed_at"] else {}),
                     "argocd": {"application": s["app"], **({"source_index": s["index"]} if s["index"] is not None else {}),
+                               **({"url": f"{ui}/applications/{s['app']}"} if ui else {}),
                                "repo": s["repo"], "target_revision": s["target"], "sync_status": s["sync_status"],
                                "deployed": s["deployed"], **({"namespace_assumed": True} if assumed else {})},
                 })

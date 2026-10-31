@@ -6,6 +6,14 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- **Links in an expanded row**, where there was only text. The Renovate line links the repository and
+  its package file on the forge; the Argo CD line links the Application in Argo CD's web UI, with the
+  new `argocd.url`; "Version from" links the GitHub releases page or the ArtifactHub chart it reads.
+  The file link needs the repository's default branch, which kube-drift now reads from the forge once
+  per Renovate report (`renovate.forge` with a token); without one the repository is still linked.
+
 ## [0.7.2] - 2026-10-28
 
 ### Fixed
