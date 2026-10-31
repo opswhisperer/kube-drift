@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-31
+
 ### Fixed
 
 - **An image a chart ships is measured against its chart, not against its registry.** A newer tag for
@@ -156,7 +158,8 @@ git tags and on the GitHub releases page.
 - `registries:` entries are now needed only for `insecure: true`. `auth_env` still works and
   still wins for its host, so existing configs keep working unchanged.
 
-[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/opswhisperer/kube-drift/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/opswhisperer/kube-drift/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/opswhisperer/kube-drift/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/opswhisperer/kube-drift/compare/v0.7.0...v0.7.1
