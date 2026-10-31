@@ -13,6 +13,15 @@ git tags and on the GitHub releases page.
   new `argocd.url`; "Version from" links the GitHub releases page or the ArtifactHub chart it reads.
   The file link needs the repository's default branch, which kube-drift now reads from the forge once
   per Renovate report (`renovate.forge` with a token); without one the repository is still linked.
+- **Every row that is behind upstream now says what Renovate makes of it.** A row with no Upgrade
+  button and no PR used to say nothing at all, which read as a gap. It now says it is tracked with
+  nothing pending — linking the repository and the package file — or that Renovate is not tracking
+  it. An image inside a Helm release names the chart that ships it and links the repository that
+  chart's version is pinned in, since the image's own version is not in any Renovate file. Rows that
+  are current stay quiet, as do the cluster and its nodes, which Renovate has no say over.
+- **"Show N up to date"**, a filter that starts switched on, so the version table opens on the rows
+  that need attention instead of the whole inventory. Picking a bar segment (including `current`)
+  still shows exactly that segment, and the choice is remembered per browser.
 
 ## [0.7.2] - 2026-10-28
 
