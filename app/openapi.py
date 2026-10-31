@@ -469,7 +469,7 @@ SPEC: dict = {
             "floating": {"type": "boolean", "description": "The tag carries no version (latest, main…)."},
             "pinned_digest": {"type": ["string", "null"]}, "running_digests": {"type": "array", "items": {"type": "string"}},
             "remote_digest": {"type": ["string", "null"]},
-            "digest_current": {"type": "boolean", "description": "The running image is the tag's current image."},
+            "digest_current": {"type": "boolean", "description": "The deployed image is the tag's current image: the pinned digest when the manifest pins one, else what the pods report."},
             "ref": {"type": "string", "description": "Where to read release notes: the config's `ref`, else for images "
                     "the source repo's releases page (or docs/home page) from the image's OCI labels, else its registry page. "
                     "Empty when none is known."},

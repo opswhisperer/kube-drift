@@ -100,6 +100,37 @@ class WalkUpFallback(unittest.TestCase):
             self.assertEqual(self.resolve({"v3.32.1"})["status"], "unknown")
 
 
+class PinnedDigest(unittest.TestCase):
+    """A manifest that pins a digest is judged on the pin. containerd keeps more than one index
+    digest for the same image and may report either, so going by the kubelet's digest left a
+    correctly pinned row reading "running image is stale" for ever."""
+
+    def resolve(self, pinned, remote, running):
+        sc = Scanner(FakeK8s(), {})
+        sc.reg = mock.Mock()
+        sc.reg.tags.return_value = ("1.2.3",)
+        sc.reg.digest.return_value = remote
+        comp = {"image": "docker.io/library/widget:1.2.3", "image_host": "docker.io",
+                "image_repo": "library/widget", "tag": "1.2.3", "floating": False,
+                "pinned_digest": pinned, "running_digests": running, "ref_overridden": True}
+        sc._resolve_registry(comp)
+        return comp
+
+    def test_a_pin_on_the_tag_is_current_whatever_the_kubelet_reports(self):
+        comp = self.resolve("sha256:a", "sha256:a", ["sha256:b"])
+        self.assertEqual((comp["status"], comp["digest_current"]), ("current", True))
+
+    def test_a_pin_behind_the_tag_is_outdated_and_says_so(self):
+        comp = self.resolve("sha256:old", "sha256:new", ["sha256:old"])
+        self.assertEqual(comp["status"], "outdated")
+        self.assertIn("pinned digest is behind", comp["note"])
+
+    def test_without_a_pin_the_running_image_still_decides(self):
+        comp = self.resolve(None, "sha256:new", ["sha256:old"])
+        self.assertEqual(comp["status"], "outdated")
+        self.assertIn("tag re-pushed", comp["note"])
+
+
 class OwnRegistry(unittest.TestCase):
     def test_credentials_for_a_public_registry_keep_exact_suffixes(self):
         cfg = {"registries": {"docker.io": {"auth_env": "HUB_AUTH"}, "reg.example:5000": {"insecure": True}}}

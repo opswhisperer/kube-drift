@@ -365,6 +365,11 @@ Floating tags (`latest`, `main`, `nightly`…) carry no version, so the running 
 compared with the registry's current digest for that tag ("newer image behind tag"). Apps that
 report their version over HTTP can be asked directly with `probes`.
 
+An image the manifest pins by digest (`repo:tag@sha256:…`) is compared on that pin instead, because
+the digest a kubelet reports for a pinned image is often a different one for the same content —
+containerd keeps more than one index digest per image — which would leave the row stale for ever.
+Whether a pod has caught up with the pin is a rollout question your GitOps tool already answers.
+
 ## Orphaned resources
 
 kor does the detection. By default kube-drift runs everything `kor all` checks except CRDs
