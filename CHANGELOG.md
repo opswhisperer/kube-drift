@@ -6,6 +6,25 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- **Check now, on an expanded row.** Reads the cluster and asks that one component's upstream straight
+  away, instead of waiting for the next scan — the row you are looking at can be current without a
+  rescan of everything. Also `POST /api/drift/recheck` (up to 25 ids).
+- **Asking Renovate to look again** (`renovate.trigger`): name the workflow that runs Renovate and
+  Check now starts it for the row's repository, so an update Renovate hasn't seen yet becomes an
+  Upgrade button in about a minute instead of at its next scheduled run. Only when Renovate tracks the
+  row, has nothing pending, and last read that repository before the check that found the update; one
+  run covers every repository in the same recheck. Nothing else on the forge is touched.
+
+### Changed
+
+- **A Renovate row says when Renovate last read its repository**, and "nothing pending" now says which
+  kind of nothing it is: a run from before this check hasn't seen the version kube-drift found, while
+  one from after it has, and the update is being held back by Renovate's own rules. A report covers only
+  the repositories its run read, so one repository's run no longer makes every row look freshly checked;
+  `renovate.oldest_at` in `GET /api/drift` is the age of the whole picture.
+
 ## [0.8.1] - 2026-10-31
 
 ### Fixed

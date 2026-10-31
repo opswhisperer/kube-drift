@@ -723,25 +723,51 @@ class Scanner:
             comps = list(ex.map(self.resolve, comps))
         if self.labels_file:
             upstream.save_labels(self.labels_file, self.label_digests)
-        comps.sort(key=lambda c: (STATUS_ORDER.get(c.get("status"), 1), c["category"], c["namespace"], c["name"]))
-        by_id = {c["id"]: c for c in comps}
-        for c in comps:
-            if c.get("release"):
-                rel = by_id.get(c["release"])
-                if rel is None:          # a group whose owning release is not itself a row
-                    continue
-                rel["images"] = rel.get("images", 0) + 1
-                rel["images_outdated"] = rel.get("images_outdated", 0) + (c.get("status") == "outdated")
-        # Count what you'd act on: a release once, not once per container it ships.
-        top = [c for c in comps if not c.get("release")]
-        summary = {"total": len(top)}
-        for c in top:
-            summary[c.get("status", "unknown")] = summary.get(c.get("status", "unknown"), 0) + 1
         return {
             "scanned_at": now_iso(), "duration_s": round(time.time() - t0, 1),
-            "summary": summary, "components": comps,
+            **summarize(comps),
             **({"argocd": self.argo} if self.argo is not None else {}),
         }
+
+    # ----------------------------------------------------------------- recheck
+    def recheck(self, ids: list[str]) -> list[dict]:
+        """Just these rows, looked up again now: the cluster read afresh and their upstream asked.
+
+        The dashboard's Check now. The cluster read is the whole inventory (it is cheap next to the
+        upstream lookups a full scan does); only the rows asked for are resolved."""
+        upstream_clear_caches(self.reg)
+        if self.labels_file:
+            upstream.load_labels(self.labels_file)
+        comps = [c for c in self.inventory() if c["id"] in set(ids)]
+        self.probe(comps)
+        comps = [self.resolve(c) for c in comps]
+        if self.labels_file:
+            upstream.save_labels(self.labels_file, self.label_digests)
+        return comps
+
+
+def summarize(comps: list[dict]) -> dict:
+    """The parts of a result that depend on every row: the order, each release's image counts, the summary.
+    Run again after a row is replaced (a recheck), so the counts never drift from the rows."""
+    comps.sort(key=lambda c: (STATUS_ORDER.get(c.get("status"), 1), c["category"], c["namespace"], c["name"]))
+    by_id = {c["id"]: c for c in comps}
+    releases = {c["release"] for c in comps if c.get("release")}
+    for c in comps:
+        if c["id"] in releases:
+            c["images"] = c["images_outdated"] = 0   # counted again below, so a recheck doesn't add to the old count
+    for c in comps:
+        if c.get("release"):
+            rel = by_id.get(c["release"])
+            if rel is None:          # a group whose owning release is not itself a row
+                continue
+            rel["images"] = rel.get("images", 0) + 1
+            rel["images_outdated"] = rel.get("images_outdated", 0) + (c.get("status") == "outdated")
+    # Count what you'd act on: a release once, not once per container it ships.
+    top = [c for c in comps if not c.get("release")]
+    summary = {"total": len(top)}
+    for c in top:
+        summary[c.get("status", "unknown")] = summary.get(c.get("status", "unknown"), 0) + 1
+    return {"summary": summary, "components": comps}
 
 
 def kube_version(components: list[dict]) -> str:

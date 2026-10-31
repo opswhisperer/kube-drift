@@ -38,7 +38,7 @@ import yaml
 from . import auth, orphans, overrides, renovate
 from .openapi import SPEC
 from .k8s import K8s
-from .scan import STATUS_ORDER, Scanner, apply_ignores, fold_chart_images, kube_version, now_iso
+from .scan import STATUS_ORDER, Scanner, apply_ignores, fold_chart_images, kube_version, now_iso, summarize
 from .store import Store
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -113,8 +113,12 @@ class State:
             doc, rcfg = RENOVATE.snapshot(), CONFIG.get("renovate") or {}
             result = {**result, "components": renovate.annotate(result.get("components", []), doc, rcfg,
                                                                  (result.get("argocd") or {}).get("namespace_repos"))}
+            # received_at is the last report of any kind: a run for one repository leaves the rest as they
+            # were, so oldest_at is what says how current the whole picture is.
+            ats = [r.get("at") for r in doc.get("repos", {}).values() if r.get("at")]
             meta["renovate"] = {"received_at": doc.get("received_at"), "repositories": len(doc.get("repos", {})),
-                                "can_approve": renovate.can_approve(rcfg)}
+                                "can_approve": renovate.can_approve(rcfg), "can_trigger": renovate.can_trigger(rcfg),
+                                **({"oldest_at": min(ats)} if ats else {})}
         # After Renovate, which decides whether a chart's image is yours to bump or the chart's.
         result = fold_chart_images(result)
         return {**meta, **result}
@@ -122,6 +126,23 @@ class State:
     def find(self, ids: list[str]) -> dict[str, dict]:
         with self.lock:
             return {c["id"]: c for c in (self.result or {}).get("components", []) if c["id"] in set(ids)}
+
+    def replace(self, comps: list[dict]):
+        """Rechecked rows in place of the ones the last scan left. The counts are worked out again,
+        so a row that just went current doesn't leave its release claiming an outdated image."""
+        if not comps:
+            return
+        with self.lock:
+            if not self.result:
+                return
+            fresh = {c["id"]: c for c in comps}
+            rows = [fresh.pop(c["id"], c) for c in self.result.get("components", [])]
+            self.result = {**self.result, **summarize(rows + list(fresh.values()))}
+            text = json.dumps(self.result)
+        try:
+            STATE_FILE.write_text(text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("cannot persist state: %s", e)
 
 
 STATE = State()
@@ -452,6 +473,7 @@ class Handler(BaseHTTPRequestHandler):
                    "/api/orphans/commands": self._commands,
                    "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule,
                    "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates,
+                   "/api/drift/recheck": self._recheck,
                    "/api/config/rules": self._set_config_rule, "/api/config/rules/delete": self._remove_config_rule,
                    "/api/keys": self._create_key, "/api/keys/delete": self._revoke_key,
                    "/api/renovate/report": self._renovate_report, "/api/renovate/approve": self._renovate_approve}
@@ -495,6 +517,12 @@ class Handler(BaseHTTPRequestHandler):
                 ids = [str(i) for i in body.get("ids", [])]
                 if not ids or len(ids) > 1000:
                     raise ValueError("ids: 1..1000 component ids")
+                body["ids"] = ids
+            elif self.path.split("?", 1)[0] == "/api/drift/recheck":
+                # one lookup each, while someone waits: a handful, not the whole dashboard (that's /api/rescan)
+                ids = [str(i) for i in body.get("ids", [])]
+                if not ids or len(ids) > 25:
+                    raise ValueError("ids: 1..25 component ids")
                 body["ids"] = ids
             return body
         except (ValueError, AttributeError) as e:
@@ -579,6 +607,32 @@ class Handler(BaseHTTPRequestHandler):
             self._json(503, {"error": f"{ORPHANS.store.root} is not writable"})
             return
         self._json(200, {"unignored": ORPHANS.store.unignore_updates(body["ids"])})
+
+    def _recheck(self, body: dict):
+        """Look these rows up again now — the cluster and their upstream — instead of waiting for the next
+        scan, and, when Renovate tracks a row but last read its repository before this check, ask Renovate
+        to look at that repository too (renovate.trigger)."""
+        if STATE.scanning:
+            self._json(409, {"error": "a scan is running: it covers these rows"})
+            return
+        scanner = Scanner(K8s(), overrides.effective(CONFIG, ORPHANS.store.config_rules()), DATA_DIR)
+        comps = scanner.recheck(body["ids"])
+        STATE.replace(comps)
+        done = [c["id"] for c in comps]
+        out = {"rechecked": done, "missing": [i for i in body["ids"] if i not in set(done)]}
+        rcfg = CONFIG.get("renovate") or {}
+        if RENOVATE and renovate.can_trigger(rcfg) and body.get("renovate") is not False:
+            rows = [c for c in STATE.snapshot().get("components", []) if c["id"] in set(done)]
+            repos = sorted({c["renovate"]["repo"] for c in rows if renovate.behind(c)})
+            if not repos:
+                out["renovate"] = {"status": "nothing to ask about"}
+            else:
+                try:   # Renovate having been asked or not doesn't change what the recheck found
+                    out["renovate"] = renovate.trigger(rcfg, repos)
+                except renovate.ForgeError as e:
+                    log.warning("asking Renovate to look at %s: %s", ", ".join(repos), e)
+                    out["renovate"] = {"status": "failed", "error": str(e)[:300]}
+        self._json(200, out)
 
     # ----- Renovate: its report in, approvals out (to the forge, never the cluster) -----
     def _renovate_report(self, body: dict):

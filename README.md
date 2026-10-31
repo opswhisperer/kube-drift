@@ -303,6 +303,12 @@ its inbox: each row it can match says what Renovate has for it, and an update wa
 | **Renovate: …** | Renovate has the branch planned but waits (schedule, rate limit), or you just approved it |
 | expanded: *tracked* / *not tracked by Renovate* | Renovate watches it with nothing pending, or doesn't know it at all (a gap in its config) |
 
+A tracked row with an update says when Renovate last read that repository, because that decides what its
+silence means: a run from before the check hasn't seen the version kube-drift just found, while a run from
+after it has, and then the update is held back by Renovate's own rules (`packageRules`, `allowedVersions`,
+`ignorePaths`) — worth a look at its config. Renovate's report covers the repositories that run read, so after
+a run for one repository the rest are as old as their own last run.
+
 **1. Turn it on.** In the config:
 
 ```yaml
@@ -331,6 +337,26 @@ show Renovate's state, and approving stays on the forge. Use a bot account with 
 edits nothing else. Want the PR at once instead of at Renovate's next scheduled run? Start Renovate from a
 workflow on the dashboard issue's `edited` event.
 
+**4. Optional: asking Renovate to look now.** If Renovate runs from a workflow you can start (a Forgejo, Gitea
+or GitHub Actions workflow taking the repositories as an input), name it and **Check now** on a row can ask for
+a run instead of waiting for the schedule:
+
+```yaml
+renovate:
+  trigger:
+    repo: acme/renovate          # the repository holding the workflow
+    workflow: renovate.yml       # its file name (default)
+    ref: main                    # the branch to run it on (default)
+    repos_input: repos           # the input that takes the repositories, comma-separated (default)
+    inputs: { dryRun: none }     # whatever else that workflow needs
+    # token_env: RENOVATE_TRIGGER_TOKEN   # default: the forge token above
+```
+
+kube-drift starts the workflow for the row's repository only when Renovate tracks the row, has nothing
+pending, and last read that repository before the check that found the update — so a run is asked for when
+Renovate's answer is out of date, not every time you press the button. One run covers every repository in the
+same recheck. The token only needs to start that workflow; a bot of its own is the tidy way.
+
 **Matching:** an image by name (with or without its registry, so `quay.io/org/app` is Renovate's `org/app`)
 and tag; a chart by name and installed version. When the same image and tag are in several repositories,
 kube-drift takes the one the row's namespace is synced from, if [`argocd:`](#argo-cd) is on.
@@ -355,6 +381,10 @@ A chart update whose `kubeVersion` excludes the control plane's version is marke
 with the reason. The range comes from ArtifactHub, or for an OCI chart from the chart's metadata
 in its registry (a small config blob, cached by digest; the chart itself isn't pulled). The
 dashboard hides those rows until you press "Show N incompatible".
+
+A row is looked up again on its own with **Check now** (expand it): kube-drift reads the cluster and asks
+that one component's upstream straight away, instead of waiting for the next scan — the scan interval is what
+decides how soon a new version shows up at all, so a row you are looking at right now is worth a press.
 
 To put off an update, expand its row and press "Ignore this update…". It stays hidden until the
 first of the conditions you pick: the next version coming out (for a floating tag, its image
@@ -442,6 +472,7 @@ ships included. For just what `summary.outdated` counts, say for a status tile, 
 | `GET /api/drift.csv[?…]` | version scan (CSV), same filters |
 | `GET /api/orphans` | orphan scan, with ignores and rules applied |
 | `POST /api/rescan[?scope=versions\|orphans]` | rescan now |
+| `POST /api/drift/recheck` | `{ids, renovate?}` → a few components looked up again now |
 | `POST /api/orphans/ignore`, `/unignore` | `{ids, note}` |
 | `POST /api/orphans/rules`, `/rules/delete` | `{rule, note}`, `{id}` |
 | `POST /api/orphans/commands` | `{ids, action: export\|delete}` → `{script, skipped}` |

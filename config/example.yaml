@@ -236,6 +236,19 @@ runtimes:
 #     url: https://git.example.com      # github: https://github.com (the default) or a GitHub Enterprise URL
 #     # token_env: RENOVATE_FORGE_TOKEN # the env var holding the token (default)
 #   dashboard_title: Dependency Dashboard   # your Renovate dependencyDashboardTitle
+#
+#   # Symptom: a row says Renovate has nothing pending, but Renovate simply hasn't run since the
+#   #          version came out, so there is no Upgrade button and nothing says why.
+#   # Fix:     name the workflow that runs Renovate. Check now on a row then asks for a run of it
+#   #          (a workflow dispatch, as from the forge's own UI) when Renovate last read that
+#   #          repository before the check that found the update. Only that workflow is started.
+#   trigger:
+#     repo: acme/renovate                 # the repository holding the workflow
+#     workflow: renovate.yml              # its file name (default)
+#     ref: main                           # the branch to run it on (default)
+#     repos_input: repos                  # the input taking the repositories, comma-separated (default)
+#     inputs: { dryRun: none }            # whatever else that workflow wants
+#     # token_env: RENOVATE_TRIGGER_TOKEN # default: the forge token above
 
 
 # ═════════════════════════════════════════════════════════════════════ ORPHANED RESOURCES

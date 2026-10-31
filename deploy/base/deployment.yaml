@@ -70,6 +70,14 @@ spec:
                   name: kube-drift-credentials
                   key: renovate-forge-token
                   optional: true
+            # Only with renovate.trigger in the config, and only when its token_env says so: a token that may
+            # start the workflow running Renovate (Check now asks for a run). Same Secret, key renovate-trigger-token.
+            - name: RENOVATE_TRIGGER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kube-drift-credentials
+                  key: renovate-trigger-token
+                  optional: true
             # Only with built-in sign-in (auth.oidc in the config): the OIDC client's secret.
             - name: OIDC_CLIENT_SECRET
               valueFrom:

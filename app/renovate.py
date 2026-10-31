@@ -10,6 +10,9 @@ Each version-drift row an image or a chart is matched to a Renovate dependency, 
     pending    Renovate has the branch planned (rate limits, schedule…); `result` says which
     tracked    Renovate watches it and has nothing to do
     untracked  Renovate doesn't track it (only once a report exists)
+Every row Renovate knows carries `checked_at`: when the run that said so read that repository. A report for one repository
+replaces only its own entry, so the repositories in a report differ in age; the dashboard compares `checked_at`
+with the row's own check before calling an update "nothing pending".
 An image is matched by name (with or without its registry) and tag, a chart by name and installed version. When
 the same image and tag are in several repositories, the Argo CD Applications of the row's namespace (argocd:
 enabled) say which repository is its own.
@@ -17,6 +20,9 @@ enabled) say which repository is its own.
 Approving needs the forge (renovate.forge: forgejo, gitea or github) and a token that may edit issues: kube-drift
 ticks `<!-- approve-branch=… -->` in the repository's open dashboard issue, exactly as a person would. Renovate
 opens the PR on its next run (or at once, when a workflow in the repository starts Renovate on that edit).
+
+renovate.trigger (optional) names the workflow that runs Renovate, so Check now can ask it to look at a repository
+again instead of waiting for its schedule: a workflow dispatch, the same call a person makes from the forge's UI.
 Nothing here touches the cluster.
 """
 from __future__ import annotations
@@ -177,6 +183,7 @@ def annotate(components: list[dict], doc: dict, cfg: dict, namespace_repos: Opti
         if best:
             _, repo, d, hit = best
             info = {"state": "tracked", "repo": repo, "dependency": d["dep"], "file": d["file"],
+                    **({"checked_at": at} if (at := doc["repos"][repo].get("at")) else {}),
                     **({"repo_url": u} if (u := repo_url(cfg, repo)) else {}),
                     **({"file_url": u} if (u := file_url(cfg, repo, d["file"], (doc["repos"][repo].get("base_branch") or ""))) else {})}
             if d.get("skip"):
@@ -257,10 +264,16 @@ def can_approve(cfg: dict) -> bool:
     return bool(f["url"] and os.environ.get(f["token_env"]))
 
 
-class ApproveError(Exception):
+class ForgeError(Exception):
+    """A call to the forge that the caller should see: `status` is the HTTP status to answer with."""
+
     def __init__(self, status: int, msg: str):
         super().__init__(msg)
         self.status = status
+
+
+class ApproveError(ForgeError):
+    pass
 
 
 def approve(cfg: dict, repo: str, branch: str) -> dict:
@@ -308,3 +321,59 @@ def approve(cfg: dict, repo: str, branch: str) -> dict:
         raise ApproveError(502, f"updating {repo}#{issue['number']}: HTTP {e.status}") from e
     log.info("approved %s in %s#%s", branch, repo, issue["number"])
     return {"status": "approved", "issue": url}
+
+
+# ----- asking Renovate to look again -----------------------------------------------------------------------------
+def trigger_cfg(cfg: dict) -> dict:
+    """renovate.trigger, filled in: the workflow that runs Renovate, and how to name the repositories to it."""
+    t = dict((cfg or {}).get("trigger") or {})
+    t.setdefault("workflow", "renovate.yml")
+    t.setdefault("ref", "main")
+    t.setdefault("repos_input", "repos")
+    t.setdefault("inputs", {})
+    t.setdefault("token_env", forge_cfg(cfg)["token_env"])
+    return t
+
+
+def can_trigger(cfg: dict) -> bool:
+    t = trigger_cfg(cfg)
+    return bool(forge_cfg(cfg)["url"] and t.get("repo") and os.environ.get(t["token_env"]))
+
+
+def trigger(cfg: dict, repos: list[str]) -> dict:
+    """Start the Renovate workflow for these repositories (a workflow dispatch on the forge).
+
+    The repositories go in as one input value, comma-separated, because one run can cover several."""
+    f, t = forge_cfg(cfg), trigger_cfg(cfg)
+    if not t.get("repo"):
+        raise ForgeError(503, "asking Renovate to look needs renovate.trigger.repo (the repository holding its workflow)")
+    if f["type"] not in ("github", "forgejo", "gitea"):
+        raise ForgeError(503, f"renovate.forge.type {f['type']!r}: forgejo, gitea or github")
+    api, auth = _api({**f, "token_env": t["token_env"]})
+    if not api:
+        raise ForgeError(503, f"asking Renovate to look needs renovate.forge.url and a token in ${t['token_env']}")
+    bad = [r for r in repos if not re.fullmatch(r"[\w.-]+/[\w.-]+", r or "")]
+    if not repos or bad:
+        raise ForgeError(400, f"repositories must be owner/name: {', '.join(bad) or 'none given'}")
+    repos = sorted(set(repos))
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", t["repo"]) or not re.fullmatch(r"[\w.-]+\.ya?ml", str(t["workflow"])):
+        raise ForgeError(503, "renovate.trigger.repo must be owner/name and workflow a .yml file name")
+    body = {"ref": t["ref"], "inputs": {**{k: str(v) for k, v in (t["inputs"] or {}).items()},
+                                        t["repos_input"]: ",".join(repos)}}
+    url = f"{api}/repos/{t['repo']}/actions/workflows/{t['workflow']}/dispatches"
+    try:
+        http.request(url, method="POST", headers={**auth, "Content-Type": "application/json"},
+                     data=json.dumps(body).encode())
+    except http.HttpError as e:
+        raise ForgeError(502, f"starting {t['workflow']} in {t['repo']}: HTTP {e.status}") from e
+    log.info("asked Renovate to look at %s (%s in %s)", ", ".join(repos), t["workflow"], t["repo"])
+    return {"status": "started", "repositories": repos, "workflow": f"{t['repo']} {t['workflow']}"}
+
+
+def behind(comp: dict) -> bool:
+    """True when Renovate tracks this row, wants nothing, and last read that repository before the check that
+    found the update. Then its silence says nothing yet, and a run is worth asking for."""
+    r = comp.get("renovate") or {}
+    if r.get("state") != "tracked" or not (comp.get("status") == "outdated" or comp.get("images_outdated")):
+        return False
+    return bool(r.get("checked_at") and comp.get("checked_at") and r["checked_at"] < comp["checked_at"])
