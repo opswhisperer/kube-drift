@@ -68,6 +68,37 @@ def _jsonpath(obj, path: str):
     return obj
 
 
+def fold_chart_images(result: dict) -> dict:
+    """An image a chart ships moves when the chart moves, so the chart is its track.
+
+    Measuring it against the newest tag in its registry asks a question nobody can answer: while the
+    chart is current there is no supported way to take that tag. The row sat outdated with no upgrade
+    to offer, and its release read "current" and "1 outdated" at once. Such a row is current here, and
+    the newer tag is kept as latest_any, which the dashboard shows the way it shows a `track` rule's.
+
+    Two images are left alone. One Renovate found in a file (`renovate.file`): the tag is pinned in a
+    repository you control, so it moves on its own and a PR can take it. And one whose running digest
+    is stale, which is about the pod, not about the chart.
+
+    Read time, not scan time: it needs Renovate's view of each row.
+    """
+    comps = result.get("components") or []
+    rel_status = {c["id"]: c.get("status") for c in comps}
+    out = []
+    for c in comps:
+        if (rel_status.get(c.get("release") or "") == "current" and c.get("status") == "outdated"
+                and c.get("digest_current") is not False and not (c.get("renovate") or {}).get("file")):
+            c = {**c, "latest_any": c.get("latest_any") or c.get("latest"),
+                 "latest": c.get("installed"), "status": "current"}
+        out.append(c)
+    behind: dict[str, int] = {}
+    for c in out:
+        if c.get("release") and c.get("status") == "outdated":
+            behind[c["release"]] = behind.get(c["release"], 0) + 1
+    out = [{**c, "images_outdated": behind.get(c["id"], 0)} if c.get("images") else c for c in out]
+    return {**result, "components": out}
+
+
 class Scanner:
     def __init__(self, k8s, config: dict, data_dir: Optional[Path] = None):
         self.k8s = k8s
@@ -386,8 +417,9 @@ class Scanner:
             containers = w["spec"]["template"]["spec"].get("containers", [])
             grp = next((g for g in groups if _match(g, ns, name)), None)
             if grp:
-                g = grouped.setdefault(grp["label"], {"members": set(), "images": {}})
+                g = grouped.setdefault(grp["label"], {"members": set(), "images": {}, "owners": set()})
                 g["members"].add(f"{ns}/{name}")
+                g["owners"].add((owner, operator))
                 for c in containers:
                     g["images"].setdefault(c["image"], (ns, name, kind, c["name"]))
                 continue
@@ -401,10 +433,17 @@ class Scanner:
                 out.append(comp)
 
         for label, g in grouped.items():
+            # The group keeps its members' owner when they agree: Envoy Gateway's data plane is the `eg`
+            # chart's, and listing it apart made one chart bump look like two unrelated updates. A group
+            # that spans releases (gateways of every namespace) has no single owner and stays on its own.
+            owner, operator = next(iter(g["owners"])) if len(g["owners"]) == 1 else (None, None)
             for image, (ns, name, kind, cname) in g["images"].items():
-                comp = add_image(ns, label, kind, image, None, f"{len(g['members'])} workloads · e.g. {name}")
+                comp = add_image(ns, label, kind, image, owner, f"{len(g['members'])} workloads · e.g. {name}")
                 comp["id"] = f"group/{re.sub(r'[^a-z0-9]+', '-', label.lower())}/{comp['image_repo'].split('/')[-1]}"
-                comp["install"] = "managed"
+                if operator:
+                    comp["install"] = f"{operator} ({owner[2]} {owner[0]})"
+                elif not owner:
+                    comp["install"] = "managed"
                 out.append(comp)
 
         # Static pods (kubeadm control plane, kube-vip) — owned by a Node, not a controller.
@@ -688,7 +727,9 @@ class Scanner:
         by_id = {c["id"]: c for c in comps}
         for c in comps:
             if c.get("release"):
-                rel = by_id[c["release"]]
+                rel = by_id.get(c["release"])
+                if rel is None:          # a group whose owning release is not itself a row
+                    continue
                 rel["images"] = rel.get("images", 0) + 1
                 rel["images_outdated"] = rel.get("images_outdated", 0) + (c.get("status") == "outdated")
         # Count what you'd act on: a release once, not once per container it ships.

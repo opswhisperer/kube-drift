@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from app.scan import Scanner
+from app.scan import Scanner, fold_chart_images
 from tests.fake_k8s import FakeK8s
 from app import upstream
 from app.upstream import split_image
@@ -268,6 +268,75 @@ class HelmNesting(unittest.TestCase):
         comps = {c["id"]: c for c in Scanner(K(), {}).inventory()}
         self.assertEqual(comps["workload/tailscale/operator/k8s-operator"]["release"], "helm/kube-system/descheduler")
         self.assertNotIn("release", comps["workload/ai/litellm/litellm"])
+
+
+class ChartShippedImages(unittest.TestCase):
+    """While its chart is current, an image the chart ships is current: nobody can take a newer tag."""
+
+    def result(self, chart="current", child=None):
+        child = {"id": "w", "release": "r", "status": "outdated", "installed": "9.1.2", "latest": "9.1.3",
+                 **(child or {})}
+        return {"components": [{"id": "r", "status": chart, "images": 1, "images_outdated": 1}, child]}
+
+    def fold(self, **kw):
+        return {c["id"]: c for c in fold_chart_images(self.result(**kw))["components"]}
+
+    def test_a_newer_tag_the_chart_does_not_ship_is_not_an_update(self):
+        out = self.fold()
+        self.assertEqual((out["w"]["status"], out["w"]["latest"], out["w"]["latest_any"]), ("current", "9.1.2", "9.1.3"))
+        self.assertEqual(out["r"]["images_outdated"], 0)
+
+    def test_an_image_renovate_pins_in_your_own_file_stays_yours_to_bump(self):
+        out = self.fold(child={"renovate": {"state": "approve", "file": "values.yaml"}})
+        self.assertEqual((out["w"]["status"], out["w"]["latest"]), ("outdated", "9.1.3"))
+        self.assertEqual(out["r"]["images_outdated"], 1)
+
+    def test_a_stale_running_digest_is_about_the_pod_not_the_chart(self):
+        out = self.fold(child={"digest_current": False})
+        self.assertEqual(out["w"]["status"], "outdated")
+
+    def test_an_outdated_chart_decides_for_itself(self):
+        out = self.fold(chart="outdated")
+        self.assertEqual((out["w"]["status"], out["w"]["latest"]), ("outdated", "9.1.3"))
+
+    def test_the_scan_result_is_left_alone(self):
+        res = self.result()
+        fold_chart_images(res)
+        self.assertEqual([c["status"] for c in res["components"]], ["current", "outdated"])
+        self.assertEqual(res["components"][0]["images_outdated"], 1)
+
+
+class GroupedWorkloads(unittest.TestCase):
+    """A collapsed group of generated workloads belongs to the release whose operator made them."""
+
+    def scan(self, groups, extra_label="longhorn.io/managed-by"):
+        class K(FakeK8s):
+            def workloads(self):
+                ws = super().workloads()
+                ws.append({"kind": "DaemonSet", "metadata": {"namespace": "longhorn-system", "name": "longhorn-manager",
+                           "annotations": {"meta.helm.sh/release-name": "longhorn"}},
+                           "spec": {"template": {"spec": {"containers": [{"name": "m", "image": "longhornio/longhorn-manager:v1.12.1"}]}}}})
+                for n in ("gen-a", "gen-b"):
+                    ws.append({"kind": "Deployment", "metadata": {"namespace": "longhorn-system", "name": n,
+                               "labels": {extra_label: "longhorn-manager"}},
+                               "spec": {"template": {"spec": {"containers": [{"name": "c", "image": "longhornio/longhorn-share-manager:v1.12.1"}]}}}})
+                return ws
+        sc = Scanner(K(), {"groups": groups})
+        sc.resolve = lambda c: {**c, "status": "current"}
+        return {c["id"]: c for c in sc.run()["components"]}
+
+    def test_the_group_joins_its_operators_release(self):
+        comps = self.scan([{"label": "Generated", "namespace": "longhorn-system", "name_regex": "^gen-"}])
+        g = comps["group/generated/longhorn-share-manager"]
+        self.assertEqual((g["release"], g["category"]), ("helm/longhorn-system/longhorn", "helm-workload"))
+        self.assertEqual(g["install"], "longhorn-manager (helm longhorn)")
+
+    def test_a_group_with_no_single_owner_stays_on_its_own(self):
+        # the whoami workload in another namespace matches too, and nothing owns it
+        comps = self.scan([{"label": "Generated", "name_regex": "^(gen-|whoami$)"}])
+        g = comps["group/generated/longhorn-share-manager"]
+        self.assertNotIn("release", g)
+        self.assertEqual((g["category"], g["install"]), ("manifest", "managed"))
 
 
 class ReleaseNotesLinks(unittest.TestCase):

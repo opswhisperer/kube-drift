@@ -6,6 +6,20 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An image a chart ships is measured against its chart, not against its registry.** A newer tag for
+  something a current chart pins is not an update anyone can take, so the row no longer reads
+  `outdated` with no upgrade to offer, and its release no longer reads `current` and "1 outdated" at
+  the same time. The newer tag is kept as `latest_any` and shown the way a `track` rule's is. Two
+  images keep their own verdict: one Renovate found pinned in a file you control (it moves on its own,
+  and a PR can take it), and one whose running digest is stale, which is about the pod.
+- **A collapsed group joins the release whose operator created it.** Envoy Gateway's data plane — 36
+  Deployments behind one `groups:` row — was listed as a manifest of its own, so one chart bump showed
+  up as two unrelated updates and the data-plane row offered nothing to click. A group whose members
+  agree on an owner now nests under that release and takes its name for `install`; one that spans
+  releases, such as gateways across every namespace, still stands alone.
+
 ## [0.8.0] - 2026-10-31
 
 ### Added
