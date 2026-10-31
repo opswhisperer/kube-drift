@@ -74,7 +74,7 @@ def condense(report: dict) -> dict:
 
 
 class Store:
-    """renovate.json: {received_at, repos: {repo: {at, deps, branches}}}."""
+    """renovate.json: {received_at, repos: {repo: {at, base_branch, deps, branches}}}."""
 
     def __init__(self, root: Path):
         self.file = root / "renovate.json"
@@ -86,12 +86,15 @@ class Store:
             except Exception as e:  # noqa: BLE001
                 log.warning("ignoring %s: %s", self.file, e)
 
-    def ingest(self, report: dict) -> dict:
+    def ingest(self, report: dict, cfg: Optional[dict] = None) -> dict:
         repos = condense(report)
         at = _now()
+        # the default branch, for the file links: asked once per run, and kept when the forge won't say
+        branches = {repo: (default_branch(cfg, repo) if cfg else "") for repo in repos}
         with self.lock:
             for repo, r in repos.items():
-                self.doc["repos"][repo] = {"at": at, **r}
+                keep = (self.doc["repos"].get(repo) or {}).get("base_branch") or ""
+                self.doc["repos"][repo] = {"at": at, "base_branch": branches[repo] or keep, **r}
             self.doc["received_at"] = at
             text = json.dumps(self.doc)
         tmp = self.file.with_suffix(".tmp")
@@ -173,7 +176,9 @@ def annotate(components: list[dict], doc: dict, cfg: dict, namespace_repos: Opti
                 best = (rank, repo, d, hit)
         if best:
             _, repo, d, hit = best
-            info = {"state": "tracked", "repo": repo, "dependency": d["dep"], "file": d["file"]}
+            info = {"state": "tracked", "repo": repo, "dependency": d["dep"], "file": d["file"],
+                    **({"repo_url": u} if (u := repo_url(cfg, repo)) else {}),
+                    **({"file_url": u} if (u := file_url(cfg, repo, d["file"], (doc["repos"][repo].get("base_branch") or ""))) else {})}
             if d.get("skip"):
                 info["skipped"] = d["skip"]
             if hit:
@@ -208,6 +213,45 @@ def pr_url(cfg: dict, repo: str, n: int) -> str:
     return f"{f['url']}/{repo}/pull/{n}" if f["type"] == "github" else f"{f['url']}/{repo}/pulls/{n}"
 
 
+def repo_url(cfg: dict, repo: str) -> str:
+    f = forge_cfg(cfg)
+    return f"{f['url']}/{repo}" if f["url"] and repo else ""
+
+
+def file_url(cfg: dict, repo: str, path: str, branch: str) -> str:
+    """The forge's page for a package file. Needs the branch: the repository's default, stored by ingest."""
+    f = forge_cfg(cfg)
+    if not (f["url"] and repo and path and branch):
+        return ""
+    at = "blob" if f["type"] == "github" else "src/branch"
+    return f"{f['url']}/{repo}/{at}/{branch}/{path.lstrip('/')}"
+
+
+def _api(f: dict) -> tuple[str, dict]:
+    """(API base, auth headers) for the configured forge, or ("", {}) when it has no token."""
+    tok = os.environ.get(f["token_env"], "")
+    if not f["url"] or not tok:
+        return "", {}
+    if f["type"] == "github":
+        api = "https://api.github.com" if f["url"] == "https://github.com" else f"{f['url']}/api/v3"
+        return api, {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
+    if f["type"] in ("forgejo", "gitea"):
+        return f"{f['url']}/api/v1", {"Authorization": f"token {tok}"}
+    return "", {}
+
+
+def default_branch(cfg: dict, repo: str) -> str:
+    """The repository's default branch, for file links. Best effort: "" when the forge won't say."""
+    api, auth = _api(forge_cfg(cfg))
+    if not api or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or ""):
+        return ""
+    try:
+        return str(http.request(f"{api}/repos/{repo}", headers=auth).json().get("default_branch") or "")
+    except Exception as e:  # noqa: BLE001  — a link is a nicety, never a reason to fail a report
+        log.debug("default branch of %s: %s", repo, e)
+        return ""
+
+
 def can_approve(cfg: dict) -> bool:
     f = forge_cfg(cfg)
     return bool(f["url"] and os.environ.get(f["token_env"]))
@@ -222,22 +266,18 @@ class ApproveError(Exception):
 def approve(cfg: dict, repo: str, branch: str) -> dict:
     """Tick the branch's approval box in the repository's open Dependency Dashboard."""
     f = forge_cfg(cfg)
-    tok = os.environ.get(f["token_env"], "")
-    if not f["url"] or not tok:
+    if f["type"] not in ("github", "forgejo", "gitea"):
+        raise ApproveError(503, f"renovate.forge.type {f['type']!r}: forgejo, gitea or github")
+    api, auth = _api(f)
+    if not api:
         raise ApproveError(503, f"approving needs renovate.forge.url and a token in ${f['token_env']}")
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or "") or not re.fullmatch(r"[\w./@+-]+", branch or ""):
         raise ApproveError(400, "repo must be owner/name and branch a branch name")
     if f["type"] == "github":
-        api = "https://api.github.com" if f["url"] == "https://github.com" else f"{f['url']}/api/v3"
-        auth = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
         listing, size = f"{api}/repos/{repo}/issues?state=open&per_page=100", 100
-    elif f["type"] in ("forgejo", "gitea"):
-        api = f"{f['url']}/api/v1"
-        auth = {"Authorization": f"token {tok}"}
+    else:
         # no q= search: Forgejo answers it from its issue indexer, which can miss an open issue (seen on 15.0)
         listing, size = f"{api}/repos/{repo}/issues?state=open&type=issues&limit=50", 50
-    else:
-        raise ApproveError(503, f"renovate.forge.type {f['type']!r}: forgejo, gitea or github")
     # GitHub lists pull requests as issues too, marked by a `pull_request` object; Forgejo/Gitea send
     # `"pull_request": null` on every plain issue, so test the value, not the key
     dash = []

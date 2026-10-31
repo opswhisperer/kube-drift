@@ -105,9 +105,12 @@ helm:
 #   enabled:    true to turn it on. Default: false — no Applications are read.
 #   namespaces: where Application objects live. Argo CD's own namespace first; add others if
 #               you use Applications in any namespace. Default: [argocd]
+#   url:        Argo CD's own address. Set it and each row's Application is a link to it.
+#               Default: none — the Application is named but not linked.
 argocd:
   # enabled: true
   # namespaces: [argocd]
+  # url: https://argocd.example.com
 
 # ── images ───────────────────────────────────────────────────────────────────────────────
 # Symptoms and fixes for containers:

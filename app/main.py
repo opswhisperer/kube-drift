@@ -581,7 +581,7 @@ class Handler(BaseHTTPRequestHandler):
     # ----- Renovate: its report in, approvals out (to the forge, never the cluster) -----
     def _renovate_report(self, body: dict):
         try:
-            res = RENOVATE.ingest(body)
+            res = RENOVATE.ingest(body, CONFIG.get("renovate") or {})
         except ValueError as e:
             self._json(400, {"error": str(e)})
             return

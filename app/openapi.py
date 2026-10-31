@@ -436,6 +436,7 @@ SPEC: dict = {
                        "`argocd.enabled`). Its id is `helm/<namespace>/<release>`, as for a release Secret, which it "
                        "replaces when both exist.", "properties": {
                 "application": {"type": "string", "description": "The Application, as `<namespace>/<name>`."},
+                "url": {"type": "string", "description": "The Application in Argo CD's web UI; only with `argocd.url`."},
                 "source_index": {"type": "integer", "description": "Multi-source Application: which `spec.sources` entry."},
                 "repo": {"type": "string", "description": "The source's repoURL: a Helm repository or an OCI registry path."},
                 "target_revision": {"type": "string", "description": "The source's targetRevision (may be a range)."},
@@ -487,6 +488,9 @@ SPEC: dict = {
                                      "says why it waits). `tracked`: Renovate watches it, nothing to do. `untracked`: "
                                      "no Renovate dependency is this image or chart."},
             "repo": {"type": "string"}, "dependency": {"type": "string"}, "file": {"type": "string"},
+            "repo_url": {"type": "string", "description": "The repository on the forge (`renovate.forge.url`); absent without one."},
+            "file_url": {"type": "string", "description": "`file` on the forge, on the repository's default branch. Absent "
+                         "until a report has come in while a forge token was set, since the branch is read from the forge."},
             "branch": {"type": "string"}, "title": {"type": "string", "description": "The PR title, as in the dashboard."},
             "new": {"type": "string", "description": "The version the update moves to."},
             "update_type": {"type": "string"}, "result": {"type": "string", "description": "Renovate's branch result."},

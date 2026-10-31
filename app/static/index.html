@@ -336,6 +336,8 @@ function rel(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso))/100
   if(s<3600) return Math.round(s/60)+' min ago'; if(s<86400) return Math.round(s/3600)+' h ago'; return Math.round(s/86400)+' d ago'; }
 function until(iso){ if(!iso) return ''; const s=(new Date(iso)-Date.now())/1000; return s<=0?'soon':(s<3600?Math.round(s/60)+' min':Math.round(s/3600*10)/10+' h'); }
 function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// link(url, text): the text alone when there is no URL, so every caller can offer one without testing for it
+function link(u,t){ return u?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t); }
 const nsLabel = n => n==='-'?'cluster-wide':n;
 const subLine = parts => `<div class="sub">${parts.filter(Boolean).map(p=>`<span>${p}</span>`).join('')}</div>`;
 
@@ -372,21 +374,24 @@ function renoLine(c){
   const r=c.renovate; if(!r || r.state==='tracked' || r.state==='untracked') return '';
   if(r.state==='approve') return `<div class="reno">${state.data.renovate?.can_approve
     ? `<button data-reno="${esc(c.id)}" title="${esc(r.title||'')} · ${esc(r.repo)}">Upgrade to ${esc(r.new)}…</button>`
-    : `<span class="hint">Renovate: waiting for approval in ${esc(r.repo)}</span>`}</div>`;
+    : `<span class="hint">Renovate: waiting for approval in ${link(r.repo_url,r.repo)}</span>`}</div>`;
   if(r.state==='pr') return `<div class="reno"><a href="${esc(r.pr_url)}" target="_blank" rel="noopener">Renovate PR #${esc(String(r.pr))}</a></div>`;
   return `<div class="reno"><span class="hint">Renovate: ${esc(r.result||'pending')}</span></div>`;
 }
+// The Renovate line of an expanded row. The repository and its package file are links when the forge
+// is configured (renovate.forge.url); the file also needs the default branch, which a report brings in.
 function renoText(r){
   if(!r) return '';
-  const where=r.repo?` in ${r.repo}${r.file?` (${r.file})`:''}`:'';
-  const also=r.also_in?.length?` · same image also in ${r.also_in.join(', ')}`:'';
-  switch(r.state){
-    case 'approve': return `update to ${r.new} waiting for approval${where} · branch ${r.branch}${also}`;
-    case 'pr': return `PR #${r.pr} open${where}${also}`;
-    case 'pending': return `${r.result||'pending'}${where} · branch ${r.branch}${also}`;
-    case 'tracked': return `tracked${where}, nothing pending${r.skipped?` (skipped: ${r.skipped})`:''}${also}`;
+  const where=r.repo?` in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}`:'';
+  const also=r.also_in?.length?` · same image also in ${r.also_in.map(x=>esc(x)).join(', ')}`:'';
+  const html=(()=>{ switch(r.state){
+    case 'approve': return `update to ${esc(r.new)} waiting for approval${where} · branch ${esc(r.branch)}${also}`;
+    case 'pr': return `${link(r.pr_url,'PR #'+r.pr)} open${where}${also}`;
+    case 'pending': return `${esc(r.result||'pending')}${where} · branch ${esc(r.branch)}${also}`;
+    case 'tracked': return `tracked${where}, nothing pending${r.skipped?` (skipped: ${esc(r.skipped)})`:''}${also}`;
     default: return 'not tracked by Renovate';
-  }
+  } })();
+  return {html};
 }
 async function approveReno(id){
   const c=(state.data.components||[]).find(x=>x.id===id), r=c?.renovate; if(!r) return;
@@ -417,17 +422,17 @@ function host(u){ try{ const h=new URL(u).hostname.replace(/^www\./,''); const p
 // An Argo CD release's Application, and what it deployed against what it targets.
 function argoText(a){
   if(!a) return '';
-  return `Application ${a.application}${a.source_index!=null?`, source ${a.source_index}`:''} · `+
-    (a.deployed?(a.sync_status||'sync status unknown'):'not synced yet')+(a.target_revision?`, targets ${a.target_revision}`:'')+
-    (a.replaced_secret_version?` · replaces a stale Helm release Secret at ${a.replaced_secret_version}`:'');
+  return {html:`Application ${link(a.url,a.application)}${a.source_index!=null?`, source ${esc(a.source_index)}`:''} · `+
+    esc(a.deployed?(a.sync_status||'sync status unknown'):'not synced yet')+(a.target_revision?`, targets ${esc(a.target_revision)}`:'')+
+    (a.replaced_secret_version?` · replaces a stale Helm release Secret at ${esc(a.replaced_secret_version)}`:'')};
 }
 function describeSource(c){
-  const s=c.source||{};
+  const s=c.source||{}, chart=s.chart||(c.image||'').replace(/^chart /,'');
   switch(s.type){
     case 'registry': return 'newest tag of the same shape in its registry';
-    case 'artifacthub': return `ArtifactHub chart ${s.repo}/${s.chart||c.image.replace(/^chart /,'')}`;
-    case 'artifacthub-search': return `ArtifactHub search for “${s.chart||c.image.replace(/^chart /,'')}”`+(s.repo_url?` from ${s.repo_url}`:'');
-    case 'github': return `GitHub releases of ${s.repo}`;
+    case 'artifacthub': return {html:`ArtifactHub chart ${link(`https://artifacthub.io/packages/helm/${encodeURIComponent(s.repo)}/${encodeURIComponent(chart)}`,`${s.repo}/${chart}`)}`};
+    case 'artifacthub-search': return {html:`ArtifactHub ${link(`https://artifacthub.io/packages/search?kind=0&ts_query_web=${encodeURIComponent(chart)}`,`search for “${chart}”`)}`+(s.repo_url?` from ${link(s.repo_url,s.repo_url)}`:'')};
+    case 'github': return {html:`GitHub releases of ${link(`https://github.com/${s.repo}/releases`,s.repo)}`};
     case 'k8s': return 'Kubernetes release channel';
     case 'oci': return `chart tags at ${s.ref}`;
     case 'none': return 'not tracked (config)';
@@ -523,7 +528,7 @@ function render(){
     const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Renovate',renoText(c.renovate)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
       ['Running digest',(c.running_digests||[]).join(', ')||c.pinned_digest],['Registry digest',c.remote_digest],
       ['Version probe',c.probe_error||(c.running_version?'ok':'')],['Error',c.error||c.digest_error],['Checked',c.checked_at&&rel(c.checked_at)],['ID',c.id]]
-      .filter(([,v])=>v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${esc(v)}</dd>`).join('');
+      .filter(([,v])=>v?.html??v).map(([k,v])=>`<dt>${k}</dt><dd class="${/digest|ID|Image/.test(k)?'v':''}">${v?.html??esc(v)}</dd>`).join('');
     const canIgn=d.ignore_enabled && !c.release && (c.ignored || c.status==='outdated' || c.images_outdated);
     const canCfg=d.ignore_enabled && !!ruleKey(c);
     const acts=!canIgn&&!canCfg?'':`<div class="dacts">${!canIgn?'':c.ignored?`<button data-unign="${esc(c.id)}">Stop ignoring</button>`:`<button data-ign="${esc(c.id)}">Ignore this update…</button>`}`+

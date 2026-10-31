@@ -125,6 +125,21 @@ class Annotate(unittest.TestCase):
         jobs = next(c for c in rows if c["id"] == "workload/shop/jobs/python")["renovate"]
         self.assertEqual(len(jobs["also_in"]), 1)
 
+    def test_forge_links(self):
+        web = self.r("workload/shop/web/web", "shop")
+        self.assertEqual(web["repo_url"], "https://git.example.com/acme/shop")
+        self.assertNotIn("file_url", web)   # no base branch: ingest had no config, so the forge was never asked
+        # with one stored, the package file is a link too — Forgejo/Gitea under /src/branch, GitHub under /blob
+        doc = self.store.snapshot()
+        doc["repos"]["acme/shop"]["base_branch"] = "main"
+        row = next(c for c in renovate.annotate(ROWS, doc, CFG, NS_REPOS) if c["id"] == "workload/shop/web/web")
+        self.assertEqual(row["renovate"]["file_url"],
+                         "https://git.example.com/acme/shop/src/branch/main/" + row["renovate"]["file"])
+        gh = {**CFG, "forge": {"type": "github", "url": "https://github.com"}}
+        self.assertEqual(renovate.file_url(gh, "acme/shop", "k8s/web.yaml", "trunk"),
+                         "https://github.com/acme/shop/blob/trunk/k8s/web.yaml")
+        self.assertEqual(renovate.file_url(gh, "acme/shop", "k8s/web.yaml", ""), "")   # branch unknown: no link
+
     def test_no_report_changes_nothing(self):
         self.assertIs(renovate.annotate(ROWS, {"received_at": None, "repos": {}}, CFG, NS_REPOS), ROWS)
 
