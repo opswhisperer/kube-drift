@@ -38,7 +38,7 @@ import yaml
 from . import auth, orphans, overrides, renovate
 from .openapi import SPEC
 from .k8s import K8s
-from .scan import STATUS_ORDER, Scanner, apply_ignores, kube_version, now_iso
+from .scan import STATUS_ORDER, Scanner, apply_ignores, fold_chart_images, kube_version, now_iso
 from .store import Store
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -115,6 +115,8 @@ class State:
                                                                  (result.get("argocd") or {}).get("namespace_repos"))}
             meta["renovate"] = {"received_at": doc.get("received_at"), "repositories": len(doc.get("repos", {})),
                                 "can_approve": renovate.can_approve(rcfg)}
+        # After Renovate, which decides whether a chart's image is yours to bump or the chart's.
+        result = fold_chart_images(result)
         return {**meta, **result}
 
     def find(self, ids: list[str]) -> dict[str, dict]:

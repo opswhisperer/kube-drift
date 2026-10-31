@@ -365,6 +365,11 @@ Floating tags (`latest`, `main`, `nightly`…) carry no version, so the running 
 compared with the registry's current digest for that tag ("newer image behind tag"). Apps that
 report their version over HTTP can be asked directly with `probes`.
 
+An image a Helm release ships is compared with its chart: while the chart is current there is no
+supported way to take a newer tag from the registry, so the row stays current and the tag shows the
+way `track` shows one. An image Renovate finds pinned in a file of yours is yours to bump, so it keeps
+its own verdict.
+
 An image the manifest pins by digest (`repo:tag@sha256:…`) is compared on that pin instead, because
 the digest a kubelet reports for a pinned image is often a different one for the same content —
 containerd keeps more than one index digest per image — which would leave the row stale for ever.

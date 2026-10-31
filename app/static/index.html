@@ -362,7 +362,8 @@ function versionCell(c){
   if(c.running_version) sub.push(`tag <code>${esc(c.installed)}</code>, version asked from the app`);
   if(c.category==='helm' && c.installed_app) sub.push(`app ${esc(c.installed_app)}${behind && c.latest_app && c.latest_app!==c.installed_app?' → '+esc(c.latest_app):''}`);
   if(c.floating && !c.running_version) sub.push(c.digest_current===true?'floating tag, running its current image':c.digest_current===false?'floating tag, a newer image is behind it':'floating tag');
-  if(c.latest_any && c.latest_any!==c.latest) sub.push(`${esc(c.latest_any)} outside your track`);
+  // A chart-shipped image's track is its chart, not a `track` rule, so say which it is.
+  if(c.latest_any && c.latest_any!==c.latest) sub.push(`${esc(c.latest_any)} ${c.release?'upstream, not in this chart':'outside your track'}`);
   if(c.incompatible) sub.push(`<span class="incompat">Not compatible: ${esc(c.incompatible)}</span>`);
   if(c.ignored) sub.push(`<span class="ignored-note">${esc(ignoreText(c.ignored))}</span>`);
   if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':
