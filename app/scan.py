@@ -591,10 +591,18 @@ class Scanner:
             remote = None
             comp["digest_error"] = f"HTTP {e.status}"
         comp["remote_digest"] = remote
-        running = comp.get("running_digests") or ([comp["pinned_digest"]] if comp.get("pinned_digest") else [])
+        pinned = comp.get("pinned_digest")
+        running = comp.get("running_digests") or ([pinned] if pinned else [])
         if not comp.get("ref_overridden"):
-            self._project_ref(comp, (running or [remote])[0])
-        if remote and running:
+            self._project_ref(comp, pinned or (running[0] if running else remote))
+        # A manifest that pins a digest is judged on the pin, never on what the kubelet reports.
+        # The two are often different digests for the same image: containerd keeps more than one
+        # index digest per image and reports whichever its store resolves to, so a pinned row read
+        # as "running image is stale" for ever. Whether a pod has caught up with the pin is a
+        # rollout question, and the GitOps tool already answers that one.
+        if remote and pinned:
+            comp["digest_current"] = pinned == remote
+        elif remote and running:
             comp["digest_current"] = remote in running
         # 2) newest tag of the same shape (pinned tags only)
         if not comp["floating"]:
@@ -613,14 +621,16 @@ class Scanner:
                 comp["status"] = "outdated" if res["outdated"] else "current"
                 if comp["status"] == "current" and comp.get("digest_current") is False:
                     comp["status"] = "outdated"
-                    comp["note"] = (comp.get("note", "") + " · tag re-pushed, running image is stale").strip(" ·")
+                    why = "pinned digest is behind this tag" if pinned else "tag re-pushed, running image is stale"
+                    comp["note"] = (comp.get("note", "") + " · " + why).strip(" ·")
         else:
             comp["latest"] = None
             if comp.get("digest_current") is True:
                 comp["status"] = "current"
             elif comp.get("digest_current") is False:
                 comp["status"] = "outdated"
-                comp["note"] = (comp.get("note", "") + f" · newer image behind '{tag}'").strip(" ·")
+                why = f"pinned digest is behind '{tag}'" if pinned else f"newer image behind '{tag}'"
+                comp["note"] = (comp.get("note", "") + " · " + why).strip(" ·")
             else:
                 comp["status"] = "unknown"
             # running version from a probe + newest semver tag gives a real number to show

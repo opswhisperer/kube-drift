@@ -23,6 +23,16 @@ git tags and on the GitHub releases page.
   that need attention instead of the whole inventory. Picking a bar segment (including `current`)
   still shows exactly that segment, and the choice is remembered per browser.
 
+### Fixed
+
+- **An image pinned by digest is no longer reported stale for ever.** kube-drift compared the
+  registry's digest for the tag against the digest the kubelet reports, and for a pinned image
+  those are routinely different digests for the *same* content — containerd keeps more than one
+  index digest per image and reports whichever its store resolves to. A correctly pinned row read
+  "tag re-pushed, running image is stale" on every scan. A row whose manifest pins a digest is now
+  judged on that pin, and says "pinned digest is behind this tag" when the pin itself has fallen
+  behind, which is the thing Renovate can act on. Rows with no pin are unchanged.
+
 ## [0.7.2] - 2026-10-28
 
 ### Fixed
