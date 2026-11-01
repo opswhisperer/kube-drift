@@ -372,7 +372,8 @@ function versionCell(c){
 }
 // Renovate (renovate.enabled): an update waiting for approval gets an Upgrade button (it ticks the box in the
 // repository's Dependency Dashboard), an open PR its link. A row that is behind upstream with neither of those
-// says why — tracked with nothing pending, or out of Renovate's sight — so a missing button is never a mystery.
+// says why — tracked with nothing pending, already merged and waiting for a sync, or out of Renovate's sight —
+// so a missing button is never a mystery.
 // A current row stays quiet, and so does one Renovate has no say over at all (the cluster and its nodes).
 function renoLine(c){
   const r=c.renovate; if(!r) return '';
@@ -380,6 +381,7 @@ function renoLine(c){
     ? `<button data-reno="${esc(c.id)}" title="${esc(r.title||'')} · ${esc(r.repo)}">Upgrade to ${esc(r.new)}…</button>`
     : `<span class="hint">Renovate: waiting for approval in ${link(r.repo_url,r.repo)}</span>`}</div>`;
   if(r.state==='pr') return `<div class="reno"><a href="${esc(r.pr_url)}" target="_blank" rel="noopener">Renovate PR #${esc(String(r.pr))}</a></div>`;
+  if(r.state==='merged') return `<div class="reno"><span class="hint">Renovate: merged in ${link(r.repo_url,r.repo)}${r.file?` (${link(r.file_url,r.file)})`:''}, waiting for a sync to ${esc(r.in_git)}</span></div>`;
   if(r.state==='tracked'||r.state==='untracked'){
     if(c.status!=='outdated') return '';
     return `<div class="reno"><span class="hint">Renovate: ${r.state==='tracked'
@@ -417,6 +419,7 @@ function renoText(c){
     case 'approve': return `update to ${esc(r.new)} waiting for approval${where} · branch ${esc(r.branch)}${also}`;
     case 'pr': return `${link(r.pr_url,'PR #'+r.pr)} open${where}${also}`;
     case 'pending': return `${esc(r.result||'pending')}${where} · branch ${esc(r.branch)}${also}`;
+    case 'merged': return `merged${where}: that file is at ${esc(r.in_git)} and this is still on ${esc(c.installed||'an older version')}, so what is left is a sync, not an approval${also}`;
     case 'tracked': return `tracked${where}, ${renoQuiet(c,r)}${r.skipped?` (skipped: ${esc(r.skipped)})`:''}${also}`;
     default: return chartNote(c)||'not tracked by Renovate';
   } })();

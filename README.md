@@ -301,6 +301,7 @@ its inbox: each row it can match says what Renovate has for it, and an update wa
 | **Upgrade to v…** | Renovate waits for approval in the repository's Dependency Dashboard. The button ticks that box (as you would on the forge), and Renovate opens the PR on its next run |
 | **Renovate PR #n** | the PR is open (a link) |
 | **Renovate: …** | Renovate has the branch planned but waits (schedule, rate limit), or you just approved it |
+| **Renovate: merged in …, waiting for a sync** | the file Renovate tracks is already at the version your deployer targets: the upgrade is merged and the cluster hasn't taken it yet, so what's left is a sync |
 | expanded: *tracked* / *not tracked by Renovate* | Renovate watches it with nothing pending, or doesn't know it at all (a gap in its config) |
 
 A tracked row with an update says when Renovate last read that repository, because that decides what its
