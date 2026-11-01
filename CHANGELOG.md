@@ -6,6 +6,18 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-31
+
+### Fixed
+
+- **A chart whose upgrade is already merged no longer reads "not tracked by Renovate".** Charts were
+  matched to a Renovate dependency by name and *installed* version, so once the bump was merged the
+  dependency moved to the new version and the running one matched nothing — exactly when the row had
+  the most to say. The version Argo CD targets now counts as a match too, and such a row says
+  **merged in <repo>, waiting for a sync** (`renovate.state` `merged`, with `in_git`). What is left
+  for it is a deploy, not an approval, so it still has no Upgrade button — but it no longer blames
+  Renovate for that. An update on top of a merged one is still approvable as before.
+
 ## [0.8.2] - 2026-10-31
 
 ### Added
@@ -180,6 +192,7 @@ git tags and on the GitHub releases page.
   still wins for its host, so existing configs keep working unchanged.
 
 [Unreleased]: https://github.com/opswhisperer/kube-drift/compare/v0.8.2...HEAD
+[0.8.3]: https://github.com/opswhisperer/kube-drift/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/opswhisperer/kube-drift/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/opswhisperer/kube-drift/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/opswhisperer/kube-drift/compare/v0.7.2...v0.8.0

@@ -511,10 +511,12 @@ SPEC: dict = {
         }},
         "RenovateState": {"type": "object", "description": "Images and charts only, once a Renovate report came in "
                           "(`renovate.enabled`).", "properties": {
-            "state": {"enum": ["approve", "pr", "pending", "tracked", "untracked"],
+            "state": {"enum": ["approve", "pr", "pending", "merged", "tracked", "untracked"],
                       "description": "`approve`: an update waits in the Dependency Dashboard (`POST /api/renovate/approve`). "
                                      "`pr`: Renovate opened its PR. `pending`: Renovate has the branch planned (`result` "
-                                     "says why it waits). `tracked`: Renovate watches it, nothing to do. `untracked`: "
+                                     "says why it waits). `merged`: the tracked file is already at the version Argo CD "
+                                     "targets (`in_git`), so the update is waiting for a sync, not an approval. "
+                                     "`tracked`: Renovate watches it, nothing to do. `untracked`: "
                                      "no Renovate dependency is this image or chart."},
             "repo": {"type": "string"}, "dependency": {"type": "string"}, "file": {"type": "string"},
             "checked_at": {"type": "string", "format": "date-time", "description": "When the Renovate run that said "
@@ -527,6 +529,8 @@ SPEC: dict = {
             "new": {"type": "string", "description": "The version the update moves to."},
             "update_type": {"type": "string"}, "result": {"type": "string", "description": "Renovate's branch result."},
             "pr": {"type": "integer"}, "pr_url": {"type": "string"},
+            "in_git": {"type": "string", "description": "With `merged`: the version the tracked file carries, which "
+                       "Argo CD targets and the cluster has not taken yet."},
             "skipped": {"type": "string", "description": "Renovate's skipReason for the dependency."},
             "also_in": {"type": "array", "items": {"type": "string"}, "description": "Other repositories with the same image and tag."},
         }},

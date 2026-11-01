@@ -8,6 +8,7 @@ Each version-drift row an image or a chart is matched to a Renovate dependency, 
     approve    an update waits in the repository's Dependency Dashboard: the Upgrade button ticks its box
     pr         Renovate opened the PR (pr, pr_url)
     pending    Renovate has the branch planned (rate limits, schedule…); `result` says which
+    merged     the tracked file is already at the version Argo CD targets: waiting for a sync, not an approval
     tracked    Renovate watches it and has nothing to do
     untracked  Renovate doesn't track it (only once a report exists)
 Every row Renovate knows carries `checked_at`: when the run that said so read that repository. A report for one repository
@@ -134,6 +135,26 @@ def _repo_slug(url: str) -> str:
     return u.lower()
 
 
+def _chart_versions(comp: dict) -> set[str]:
+    """The chart versions a Renovate dependency may be pinned at for this row: the one that runs, and the
+    one Argo CD is told to install when they differ — a merged upgrade the cluster hasn't taken yet. Without
+    the second, a row whose update is already in git matches nothing and reads as untracked, which is the
+    one thing it isn't."""
+    out = {str(comp.get("installed") or "").lstrip("v")}
+    target = str(((comp.get("argocd") or {}).get("target_revision")) or "").lstrip("v")
+    if re.match(r"\d", target):   # a chart version; a git source's targetRevision is a branch or a tag
+        out.add(target)
+    return {v for v in out if v}
+
+
+def _merged_at(comp: dict, dep: dict) -> str:
+    """The version the tracked file already carries while the cluster runs an older one, else "". Renovate
+    is done with this row: what is left is a deploy, not an approval."""
+    target = str(((comp.get("argocd") or {}).get("target_revision")) or "").lstrip("v")
+    installed = str(comp.get("installed") or "").lstrip("v")
+    return dep["current"] if target and target != installed and dep["current"].lstrip("v") == target else ""
+
+
 def _candidates(comp: dict, doc: dict) -> list[tuple[str, dict]]:
     """(repo, dep) pairs that are this row's image or chart."""
     out = []
@@ -142,7 +163,7 @@ def _candidates(comp: dict, doc: dict) -> list[tuple[str, dict]]:
         for d in r.get("deps", []):
             if chart:
                 if d["datasource"] in CHART_DATASOURCES and chart in (d["dep"], (d["package"] or "").rsplit("/", 1)[-1]) \
-                        and d["current"].lstrip("v") == str(comp.get("installed") or "").lstrip("v"):
+                        and d["current"].lstrip("v") in _chart_versions(comp):
                     out.append((repo, d))
             elif comp.get("image_repo") and d["datasource"] in IMAGE_DATASOURCES and d["current"] == comp.get("tag"):
                 host = comp.get("image_host") or "docker.io"
@@ -198,6 +219,8 @@ def annotate(components: list[dict], doc: dict, cfg: dict, namespace_repos: Opti
                     info.update({"state": "pr", "pr": b["pr"], "pr_url": pr_url(cfg, repo, b["pr"])})
                 else:
                     info["state"] = "pending"
+            if info["state"] == "tracked" and (merged := _merged_at(c, d)):
+                info.update({"state": "merged", "in_git": merged})
             if len({r for r, _ in cands}) > 1:
                 info["also_in"] = sorted({r for r, _ in cands} - {repo})
         out.append({**c, "renovate": info})

@@ -156,6 +156,48 @@ class Annotate(unittest.TestCase):
         # an update already waiting needs no run
         self.assertFalse(renovate.behind({**row, "renovate": {**row["renovate"], "state": "approve"}}))
 
+    def _chart_doc(self, current, branches=()):
+        """The platform repository with one podinfo chart dependency pinned at `current`."""
+        doc = self.store.snapshot()
+        doc["repos"]["acme/platform"] = {**doc["repos"]["acme/platform"], "branches": list(branches), "deps": [
+            {"manager": "regex", "file": "apps.yaml", "datasource": "helm", "dep": "podinfo",
+             "package": "podinfo", "current": current, "skip": None}]}
+        return doc
+
+    def _chart_row(self, **extra):
+        return {**next(r for r in ROWS if r["id"] == "helm/shop/podinfo"), **extra}
+
+    def test_a_chart_already_bumped_in_git_waits_for_a_sync(self):
+        # The upgrade is merged: the tracked file carries the version Argo CD targets while the cluster still
+        # runs the old one. Matching only on what runs missed that and called the row untracked, which sent
+        # you looking for a Renovate problem instead of an unsynced application.
+        row = self._chart_row(argocd={"application": "argocd/podinfo", "target_revision": "6.8.0"}, status="outdated")
+        got = renovate.annotate([row], self._chart_doc("6.8.0"), CFG, NS_REPOS)[0]["renovate"]
+        self.assertEqual((got["state"], got["in_git"], got["repo"]), ("merged", "6.8.0", "acme/platform"))
+        # nothing to approve and nothing to ask Renovate for: what is left is a sync
+        self.assertFalse(renovate.behind({**row, "renovate": got, "checked_at": "2026-01-02T00:00:00+00:00"}))
+
+    def test_a_chart_the_cluster_has_caught_up_with_is_plain_tracked(self):
+        row = self._chart_row(argocd={"target_revision": "6.7.1"})
+        got = renovate.annotate([row], self._chart_doc("6.7.1"), CFG, NS_REPOS)[0]["renovate"]
+        self.assertEqual(got["state"], "tracked")
+        self.assertNotIn("in_git", got)
+
+    def test_a_branch_target_revision_does_not_widen_the_match(self):
+        # a git source's targetRevision is a branch, never a chart version: it must not match a dependency
+        row = self._chart_row(argocd={"target_revision": "main"})
+        self.assertEqual(renovate.annotate([row], self._chart_doc("6.8.0"), CFG, NS_REPOS)[0]["renovate"],
+                         {"state": "untracked"})
+
+    def test_an_update_on_top_of_a_merged_one_is_still_approvable(self):
+        # git at 6.8.0, Renovate wants 6.9.0 from there: the button must win over "waiting for a sync"
+        branch = {"branch": "renovate/podinfo-6.x", "title": "Update Helm chart podinfo to v6.9.0",
+                  "result": "needs-approval", "pr": None, "upgrades": [{"dep": "podinfo", "package": "podinfo",
+                  "file": "apps.yaml", "datasource": "helm", "current": "6.8.0", "new": "6.9.0", "update_type": "minor"}]}
+        row = self._chart_row(argocd={"target_revision": "6.8.0"})
+        got = renovate.annotate([row], self._chart_doc("6.8.0", [branch]), CFG, NS_REPOS)[0]["renovate"]
+        self.assertEqual((got["state"], got["new"]), ("approve", "6.9.0"))
+
     def test_no_report_changes_nothing(self):
         self.assertIs(renovate.annotate(ROWS, {"received_at": None, "repos": {}}, CFG, NS_REPOS), ROWS)
 
