@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-03
+
 ### Changed
 
 - **A row no longer says which Helm release Secret it replaced.** When Argo CD took a release over
