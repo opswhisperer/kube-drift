@@ -40,6 +40,10 @@ check against the fixture cluster.
   new secret config key is caught by `SECRET_KEY` there.
 - **User-visible changes** get a line in `CHANGELOG.md` under `[Unreleased]` (Added, Changed,
   Fixed, Removed). A release renames that section to the version and date.
+- **A release is a `vX.Y.Z` tag, and nothing else.** Pushing it builds the image and publishes a
+  GitHub release whose notes are that version's CHANGELOG section (`release` in `ci.yml`). So the
+  section has to be renamed from `[Unreleased]` and committed *before* the tag — CI fails the
+  release rather than publish an empty one. Don't create releases by hand.
 - **New or changed config keys** go in `config/example.yaml`, explained by the dashboard
   symptom they fix. Config is YAML; keys left empty load as null and are dropped (`load_config`).
 - **Dependencies stay minimal**: standard library plus PyYAML. The UI is one HTML file with
