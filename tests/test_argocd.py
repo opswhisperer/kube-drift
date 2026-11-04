@@ -194,7 +194,7 @@ class Releases(unittest.TestCase):
         r = same[0]
         self.assertEqual((r["id"], r["install"], r["installed"]), ("helm/gitea/gitea", "argocd", "12.4.0"))
         self.assertEqual(r["argocd"]["replaced_secret_version"], "12.1.0")
-        self.assertIn("replaces Helm release Secret (12.1.0, rev 1 · 2026-10-03)", r["note"])
+        self.assertNotIn("Secret", r["note"])  # the merge is detail, not row text
         # tracked by Argo CD (Helm's annotation left over from before the move) and only Helm's annotation
         self.assertEqual(self.c["workload/gitea/gitea/gitea"]["install"], "argocd (gitea)")
         self.assertEqual(self.c["workload/gitea/gitea-valkey/valkey"]["release"], "helm/gitea/gitea")

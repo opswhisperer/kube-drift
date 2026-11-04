@@ -203,7 +203,9 @@ class Scanner:
         for c in argo:
             old = stale.pop((c["namespace"], c["name"]), None)
             if old:
-                c["note"] += f" · replaces Helm release Secret ({old['installed']}, {old['note']})"
+                # Not in the row note: a dead Secret is never what a row asks you to do something
+                # about, and beside an out-of-sync row its version reads like one you should act on.
+                # The expanded row says it (`replaced_secret_version`), where "why one row?" belongs.
                 c["argocd"]["replaced_secret_version"] = old["installed"]
                 if old["image"] == c["image"]:  # same chart: its home and source links still apply
                     self.chart_links[c["id"]] += self.chart_links.get(old["id"], ())

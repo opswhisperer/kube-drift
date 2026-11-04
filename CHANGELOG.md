@@ -6,6 +6,15 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Changed
+
+- **A row no longer says which Helm release Secret it replaced.** When Argo CD took a release over
+  from `helm install`, the leftover Secret's version and revision sat in the row's note — beside an
+  out-of-sync row's real target, where a version you must not act on reads like one you should, and
+  on a synced row it only repeated the number next to it. The expanded row still says it
+  (`argocd.replaced_secret_version`), which is where "why is this one row?" belongs. A leftover
+  release Secret is litter, not drift: kor leaves it out of the orphan scan too.
+
 ## [0.8.4] - 2026-11-03
 
 ### Added
