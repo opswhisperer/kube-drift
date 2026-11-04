@@ -6,6 +6,13 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- **An Argo CD row's Application is a link in the row itself**, not only in the expanded detail:
+  `Argo CD <namespace>/<name>` on the sub-line opens the Application in Argo CD, one click from
+  Sync, so an `OutOfSync` release can be synced by hand without hunting for it. Needs `argocd.url`;
+  without it the note stays plain text as before.
+
 ## [0.8.3] - 2026-10-31
 
 ### Fixed

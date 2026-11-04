@@ -473,6 +473,15 @@ function argoText(a){
     esc(a.deployed?(a.sync_status||'sync status unknown'):'not synced yet')+(a.target_revision?`, targets ${esc(a.target_revision)}`:'')+
     (a.replaced_secret_version?` · replaces a stale Helm release Secret at ${esc(a.replaced_secret_version)}`:'')};
 }
+// A row's note is plain text, except for the Argo CD Application at the front of an Argo CD row's:
+// that is a link to the Application, where an out-of-sync release is synced by hand.
+function noteHtml(c){
+  const a=c.argocd, n=c.note||'';
+  if(!a?.url || !a.application) return esc(n);
+  const head=`Argo CD ${a.application}`;
+  if(!n.startsWith(head)) return esc(n);
+  return `<a href="${esc(a.url)}" target="_blank" rel="noopener" title="Open this Application in Argo CD">${esc(head)}</a>`+esc(n.slice(head.length));
+}
 function describeSource(c){
   const s=c.source||{}, chart=s.chart||(c.image||'').replace(/^chart /,'');
   switch(s.type){
@@ -575,7 +584,7 @@ function render(){
     const imgs=ks.length?`${ks.length} image${ks.length===1?'':'s'}`+(c.images_outdated?`, <span class="imgs-out">${c.images_outdated} outdated</span>`:''):'';
     const row=`<tr class="row${child?' child':''}" data-id="${esc(c.id)}" tabindex="0" aria-expanded="${open}">
       <td>${badge(c)}</td>
-      <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),esc(c.note),imgs])}</td>
+      <td><div class="name">${esc(c.name)}<span class="chev" aria-hidden="true">›</span></div>${subLine([child?'':esc(nsLabel(c.namespace)),esc(c.kind),noteHtml(c),imgs])}</td>
       <td>${versionCell(c)}</td><td class="hide-sm">${refCell(c)}</td></tr>`;
     if(!open) return row;
     const dl=[['Ignored',c.ignored&&ignoreText(c.ignored).replace(/^Ignored /,'')],['Not compatible',c.incompatible],['Installed by',c.install],['Argo CD',argoText(c.argocd)],['Renovate',renoText(c)],['Image',c.image],['Version from',describeSource(c)],['Config rule',c.config_key&&`${c.category==='helm'?'helm':'images'} › ${c.config_key}`],['Track',c.track&&c.track!=='any'?`same ${c.track} version only`:''],
