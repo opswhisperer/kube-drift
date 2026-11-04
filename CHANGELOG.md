@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-03
+
 ### Added
 
 - **An Argo CD row's Application is a link in the row itself**, not only in the expanded detail:
