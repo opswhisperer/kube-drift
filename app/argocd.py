@@ -6,11 +6,62 @@ repository and version each source deployed, and which objects belong to the App
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
 from typing import Optional
+from urllib.parse import quote
 
+from . import http
+
+log = logging.getLogger("kube-drift.argocd")
+
+DEFAULT_TOKEN_ENV = "ARGOCD_TOKEN"
 TRACKING = "argocd.argoproj.io/tracking-id"
 LOCAL_SERVER, LOCAL_NAME = "https://kubernetes.default.svc", "in-cluster"
+
+
+def restart_cfg(cfg: dict) -> dict:
+    """argocd.restart, filled in: the API's address (argocd.url unless it needs another) and the token's env var."""
+    r = dict((cfg or {}).get("restart") or {})
+    r["url"] = str(r.get("url") or (cfg or {}).get("url") or "").rstrip("/")
+    r.setdefault("token_env", DEFAULT_TOKEN_ENV)
+    return r
+
+
+def can_restart(cfg: dict) -> bool:
+    r = restart_cfg(cfg)
+    return bool((cfg or {}).get("enabled") is True and r["url"] and os.environ.get(r["token_env"]))
+
+
+class RestartError(Exception):
+    """A restart the caller should hear about: `status` is the HTTP status to answer with."""
+
+    def __init__(self, status: int, msg: str):
+        super().__init__(msg)
+        self.status = status
+
+
+def restart(cfg: dict, res: dict) -> dict:
+    """Run Argo CD's `restart` action on one workload, as its web UI's Restart does. Argo CD does the write,
+    under the account the token belongs to; kube-drift's own access to the cluster stays read-only."""
+    r = restart_cfg(cfg)
+    if not can_restart(cfg):
+        raise RestartError(503, f"restarting needs argocd.enabled, argocd.url and a token in ${r['token_env']}")
+    body = {"name": res["application"], "appNamespace": res["app_namespace"], "project": res["project"],
+            "namespace": res["namespace"], "resourceName": res["name"], "group": res["group"],
+            "version": res["version"], "kind": res["kind"], "action": "restart"}
+    url = f"{r['url']}/api/v1/applications/{quote(res['application'], safe='')}/resource/actions/v2"
+    try:
+        http.request(url, method="POST", data=json.dumps(body).encode(),
+                     headers={"Authorization": f"Bearer {os.environ[r['token_env']]}", "Content-Type": "application/json"})
+    except http.HttpError as e:
+        hint = ": does its account have the restart action?" if e.status in (401, 403) else ""
+        raise RestartError(502, f"Argo CD refused the restart of {res['kind']} {res['name']}: HTTP {e.status}{hint}") from e
+    except OSError as e:
+        raise RestartError(502, f"reaching Argo CD at {r['url']}: {e}") from e
+    return {"status": "restarting", "application": res["application"]}
 
 
 def is_oci(repo_url: str) -> bool:

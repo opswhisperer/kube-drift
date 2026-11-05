@@ -35,7 +35,7 @@ from pathlib import Path
 
 import yaml
 
-from . import auth, orphans, overrides, renovate
+from . import argocd, auth, orphans, overrides, renovate
 from .openapi import SPEC
 from .k8s import K8s
 from .scan import STATUS_ORDER, Scanner, apply_ignores, fold_chart_images, kube_version, now_iso, summarize
@@ -105,7 +105,7 @@ class State:
                 "scanning": self.scanning, "last_error": self.last_error,
                 "next_scan_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(self.next_scan)) if self.next_scan else None,
                 "generated_at": now_iso(), "cluster": CLUSTER["name"], "version": VERSION,
-                "ignore_enabled": store.writable,
+                "ignore_enabled": store.writable, "can_restart": argocd.can_restart(CONFIG.get("argocd") or {}),
             }
             result = self.result or {"scanned_at": None, "summary": {}, "components": []}
         result, _ = apply_ignores(result, store.update_ignores())
@@ -473,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
                    "/api/orphans/commands": self._commands,
                    "/api/orphans/rules": self._add_rule, "/api/orphans/rules/delete": self._remove_rule,
                    "/api/drift/ignore": self._ignore_updates, "/api/drift/unignore": self._unignore_updates,
-                   "/api/drift/recheck": self._recheck,
+                   "/api/drift/recheck": self._recheck, "/api/drift/restart": self._restart,
                    "/api/config/rules": self._set_config_rule, "/api/config/rules/delete": self._remove_config_rule,
                    "/api/keys": self._create_key, "/api/keys/delete": self._revoke_key,
                    "/api/renovate/report": self._renovate_report, "/api/renovate/approve": self._renovate_approve}
@@ -633,6 +633,27 @@ class Handler(BaseHTTPRequestHandler):
                     log.warning("asking Renovate to look at %s: %s", ", ".join(repos), e)
                     out["renovate"] = {"status": "failed", "error": str(e)[:300]}
         self._json(200, out)
+
+    def _restart(self, body: dict):
+        """Have Argo CD restart the workload behind one row. Only the row's id comes from the caller: what is
+        restarted, and whether it may be, comes from the last scan. Not for API keys: a key is for reading and
+        for reports, and one that leaked shouldn't be able to take pods down."""
+        if (self.who or {}).get("via") == "api-key":
+            self._json(403, {"error": "restarts are for signed-in people, not API keys"})
+            return
+        row = next((c for c in STATE.snapshot().get("components", []) if c["id"] == str(body.get("id") or "")), None)
+        if row is None:
+            self._json(404, {"error": "no such row"})
+        elif not (row.get("restart_command") and row.get("argocd_resource")):
+            self._json(409, {"error": "this row isn't one Argo CD can restart: it needs a tag whose image moved, in an Application"})
+        else:
+            try:
+                res = argocd.restart(CONFIG.get("argocd") or {}, row["argocd_resource"])
+            except argocd.RestartError as e:
+                self._json(e.status, {"error": str(e)})
+                return
+            log.info("restart: %s asked Argo CD to restart %s", self._actor() or "?", row["restart_target"])
+            self._json(200, res)
 
     # ----- Renovate: its report in, approvals out (to the forge, never the cluster) -----
     def _renovate_report(self, body: dict):

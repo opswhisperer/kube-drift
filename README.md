@@ -396,6 +396,25 @@ Floating tags (`latest`, `main`, `nightly`…) carry no version, so the running 
 compared with the registry's current digest for that tag ("newer image behind tag"). Apps that
 report their version over HTTP can be asked directly with `probes`.
 
+When a tag's image moves and the tag doesn't, on a floating tag or a version tag that was re-pushed,
+git has nothing to change and Renovate has nothing to offer. New pods are the update, so the row has
+a button that shows the `kubectl rollout restart` command to copy. kube-drift doesn't run it. A
+restart only pulls the new image with `imagePullPolicy: Always`, so any other policy gets a note
+instead, as does an `OnDelete` update strategy, where a rollout restart replaces no pods.
+
+With an Argo CD token configured (`argocd.restart`, see `config/example.yaml`), the same dialog also
+offers **Restart now** for a workload an Application owns. Argo CD does the write, under the token's
+account, so grant that account only the action:
+
+```
+p, kube-drift, applications, action/apps/Deployment/restart, */*, allow
+p, kube-drift, applications, action/apps/StatefulSet/restart, */*, allow
+p, kube-drift, applications, action/apps/DaemonSet/restart, */*, allow
+```
+
+The account can restart any workload in any Application, so narrow `*/*` if that's too broad. Only
+signed-in people can use it, not API keys, and kube-drift's log says who did.
+
 An image a Helm release ships is compared with its chart: while the chart is current there is no
 supported way to take a newer tag from the registry, so the row stays current and the tag shows the
 way `track` shows one. An image Renovate finds pinned in a file of yours is yours to bump, so it keeps

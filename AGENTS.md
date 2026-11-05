@@ -8,14 +8,17 @@ Unit tests never touch the network or a cluster; `python3 -m tests.offline` is t
 check against the fixture cluster.
 
 - **kube-drift never writes to the cluster.** RBAC is get/list only (`deploy/base/rbac.yaml`) and
-  the README promises it. Cleanup is a kubectl script the user runs (`orphans.commands`) —
+  the README promises it. Cleanup and restarts are kubectl commands the user runs
+  (`orphans.commands`, `restart_command`) —
   don't add API calls that create, patch or delete cluster objects. POST endpoints may only
-  change kube-drift's own state (ignores, rules, rescans) — with two exceptions outside the cluster,
-  each with a token the user configured, and each only what a person would do on the forge:
+  change kube-drift's own state (ignores, rules, rescans) — with three exceptions, each with a token
+  the user configured, and each only what a person would do by hand:
   `POST /api/renovate/approve` edits a Renovate Dependency Dashboard issue (ticks one box), and
   `POST /api/drift/recheck` may start the configured Renovate workflow (`renovate.trigger`: a workflow
-  dispatch) for a repository Renovate read before the row's own check. Nothing else may write to the
-  forge, and nothing may change repository content.
+  dispatch) for a repository Renovate read before the row's own check; `POST /api/drift/restart` asks
+  Argo CD to run its `restart` action on the row's workload (`argocd.restart`), for signed-in people
+  only. kube-drift's own RBAC stays read-only. Nothing else may write to the forge or to Argo CD, and
+  nothing may change repository content.
 - **Never return Secret data** from the API or dashboard — names only.
 - **Authentication is optional and off by default** (`app/auth.py`). With `auth.oidc` in the
   config, people sign in through OIDC and scripts use API keys; without it, kube-drift must sit

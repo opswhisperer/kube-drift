@@ -72,6 +72,14 @@ spec:
                   optional: true
             # Only with renovate.trigger in the config, and only when its token_env says so: a token that may
             # start the workflow running Renovate (Check now asks for a run). Same Secret, key renovate-trigger-token.
+            # Optional: a token for Argo CD's API, so a row whose tag moved can be restarted from the dashboard
+            # (argocd.restart). Without it those rows give the kubectl command. Same Secret, key argocd-token.
+            - name: ARGOCD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kube-drift-credentials
+                  key: argocd-token
+                  optional: true
             - name: RENOVATE_TRIGGER_TOKEN
               valueFrom:
                 secretKeyRef:

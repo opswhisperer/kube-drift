@@ -131,6 +131,82 @@ class PinnedDigest(unittest.TestCase):
         self.assertIn("tag re-pushed", comp["note"])
 
 
+class RestartOffer(unittest.TestCase):
+    def resolve(self, cfg=None, tag="1.2.3", pinned=None, policy="Always", strategy=None, target="deployment/widget"):
+        sc = Scanner(FakeK8s(), cfg or {})
+        sc.reg = mock.Mock()
+        sc.reg.tags.return_value = ("1.2.3",)
+        sc.reg.digest.return_value = "sha256:new"
+        comp = {"image": f"docker.io/library/widget:{tag}", "image_host": "docker.io", "namespace": "apps",
+                "image_repo": "library/widget", "tag": tag, "floating": is_floating(tag), "pinned_digest": pinned,
+                "running_digests": ["sha256:old"], "ref_overridden": True, "pull_policy": policy,
+                "update_strategy": strategy}
+        if target:
+            comp["restart_target"] = target
+        sc._resolve_registry(comp)
+        return comp
+
+    def test_a_re_pushed_tag_gets_the_command(self):
+        comp = self.resolve()
+        self.assertEqual(comp["restart_command"], "kubectl -n apps rollout restart deployment/widget")
+        self.assertNotIn("restart_hint", comp)
+
+    def test_a_floating_tag_gets_the_command(self):
+        self.assertIn("restart_command", self.resolve(tag="latest"))
+
+    def test_the_command_names_the_configured_context(self):
+        comp = self.resolve({"orphans": {"kubectl_context": "lab"}})
+        self.assertEqual(comp["restart_command"], "kubectl --context lab -n apps rollout restart deployment/widget")
+
+    def test_a_cached_image_would_survive_a_restart(self):
+        comp = self.resolve(policy="IfNotPresent")
+        self.assertNotIn("restart_command", comp)
+        self.assertIn("IfNotPresent", comp["restart_hint"])
+
+    def test_on_delete_replaces_no_pods(self):
+        comp = self.resolve(strategy="OnDelete", target="statefulset/widget")
+        self.assertNotIn("restart_command", comp)
+        self.assertIn("OnDelete", comp["restart_hint"])
+
+    def test_a_digest_pin_is_a_git_change_not_a_restart(self):
+        comp = self.resolve(pinned="sha256:old")
+        self.assertEqual(comp["status"], "outdated")
+        self.assertNotIn("restart_command", comp)
+        self.assertNotIn("restart_hint", comp)
+
+    def test_a_group_has_no_one_workload_to_restart(self):
+        comp = self.resolve(target=None)
+        self.assertNotIn("restart_command", comp)
+        self.assertNotIn("restart_hint", comp)
+
+    def test_a_newer_version_is_an_upgrade_not_a_restart(self):
+        sc = Scanner(FakeK8s(), {})
+        sc.reg = mock.Mock()
+        sc.reg.tags.return_value = ("1.2.3", "1.2.4")
+        sc.reg.digest.return_value = "sha256:new"
+        comp = {"image": "docker.io/library/widget:1.2.3", "image_host": "docker.io", "namespace": "apps",
+                "image_repo": "library/widget", "tag": "1.2.3", "floating": False, "pinned_digest": None,
+                "running_digests": ["sha256:old"], "ref_overridden": True, "pull_policy": "Always",
+                "restart_target": "deployment/widget"}
+        sc._resolve_registry(comp)
+        self.assertEqual(comp["latest"], "1.2.4")
+        self.assertNotIn("restart_command", comp)
+
+    def test_the_scan_reads_what_a_restart_needs(self):
+        class K(FakeK8s):
+            def workloads(self):
+                return [{"kind": "StatefulSet", "metadata": {"name": "db", "namespace": "apps"},
+                         "spec": {"updateStrategy": {"type": "OnDelete"}, "template": {"spec": {"containers": [
+                             {"name": "c", "image": "acme/db:1.0.0", "imagePullPolicy": "Always"}]}}}}]
+
+            def pods(self, namespace=None):
+                return []
+
+        comp = next(c for c in Scanner(K(), {})._workloads() if c["image_repo"] == "acme/db")
+        self.assertEqual((comp["restart_target"], comp["pull_policy"], comp["update_strategy"]),
+                         ("statefulset/db", "Always", "OnDelete"))
+
+
 class OwnRegistry(unittest.TestCase):
     def test_credentials_for_a_public_registry_keep_exact_suffixes(self):
         cfg = {"registries": {"docker.io": {"auth_env": "HUB_AUTH"}, "reg.example:5000": {"insecure": True}}}

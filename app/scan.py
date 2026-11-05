@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -113,6 +114,7 @@ class Scanner:
         # "renderers": n}, and the same entries by the (kind, namespace, name) of each object it lists.
         self.argo_apps: dict[str, dict] = {}
         self.argo_resources: dict[tuple[str, str, str], dict] = {}
+        self.argo_restart: dict[tuple[str, str, str], dict] = {}   # what Argo CD's restart action needs, per workload
         self.argo_ids: set[str] = set()  # ids of the Argo CD release rows
 
     # ------------------------------------------------------------------ inventory
@@ -252,6 +254,11 @@ class Scanner:
             self.argo_apps[f"{meta['namespace']}_{meta['name']}"] = entry
             for r in (app.get("status") or {}).get("resources") or []:
                 self.argo_resources.setdefault((r.get("kind", ""), r.get("namespace") or "", r.get("name", "")), entry)
+                self.argo_restart.setdefault((r.get("kind", ""), r.get("namespace") or "", r.get("name", "")), {
+                    "application": meta["name"], "app_namespace": meta["namespace"],
+                    "project": (app.get("spec") or {}).get("project") or "default", "group": r.get("group") or "",
+                    "version": r.get("version") or "", "kind": r.get("kind", ""), "namespace": r.get("namespace") or "",
+                    "name": r.get("name", "")})
             for s in argocd.helm_sources(app):
                 ns, name, chart = s["namespace"], s["release"], s["chart"]
                 assumed = not ns
@@ -432,6 +439,11 @@ class Scanner:
                 comp = add_image(ns, name, kind, c["image"], owner, note)
                 if operator:
                     comp["install"] = f"{operator} ({owner[2]} {owner[0]})"
+                comp["restart_target"] = f"{kind.lower()}/{name}"
+                comp["pull_policy"] = c.get("imagePullPolicy")
+                comp["update_strategy"] = (w["spec"].get("updateStrategy") or w["spec"].get("strategy") or {}).get("type")
+                if res := self.argo_restart.get((kind, ns, name)):
+                    comp["argocd_resource"] = res
                 out.append(comp)
 
         for label, g in grouped.items():
@@ -622,6 +634,24 @@ class Scanner:
                 return False
             raise
 
+    def _offer_restart(self, comp: dict):
+        """The tag didn't move but its image did, so git has nothing to change and Renovate nothing
+        to raise: new pods are the whole update. kube-drift never writes to the cluster, so it
+        writes the command for a person to run, or says why a restart wouldn't do it. A group of
+        workloads has no restart_target and gets neither."""
+        target = comp.get("restart_target")
+        if not target:
+            return
+        if comp.get("update_strategy") == "OnDelete":
+            comp["restart_hint"] = "updateStrategy is OnDelete, so a rollout restart replaces no pods: delete them instead"
+        elif comp.get("pull_policy") != "Always":
+            comp["restart_hint"] = (f"imagePullPolicy is {comp.get('pull_policy') or 'not known'}, so a restart can reuse "
+                                    "the image the node has cached: a new tag is the way to move this one")
+        else:
+            context = (self.cfg.get("orphans") or {}).get("kubectl_context")
+            ctx = f" --context {shlex.quote(context)}" if context else ""
+            comp["restart_command"] = f"kubectl{ctx} -n {comp['namespace']} rollout restart {target}"
+
     def _resolve_registry(self, comp: dict):
         host, repo = comp["image_host"], comp["image_repo"]
         tag = comp["tag"]
@@ -664,6 +694,8 @@ class Scanner:
                     comp["status"] = "outdated"
                     why = "pinned digest is behind this tag" if pinned else "tag re-pushed, running image is stale"
                     comp["note"] = (comp.get("note", "") + " · " + why).strip(" ·")
+                    if not pinned:
+                        self._offer_restart(comp)
         else:
             comp["latest"] = None
             if comp.get("digest_current") is True:
@@ -672,6 +704,8 @@ class Scanner:
                 comp["status"] = "outdated"
                 why = f"pinned digest is behind '{tag}'" if pinned else f"newer image behind '{tag}'"
                 comp["note"] = (comp.get("note", "") + " · " + why).strip(" ·")
+                if not pinned:
+                    self._offer_restart(comp)
             else:
                 comp["status"] = "unknown"
             # running version from a probe + newest semver tag gives a real number to show
