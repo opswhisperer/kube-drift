@@ -167,6 +167,22 @@ SPEC: dict = {
                     "received_at": {"type": "string", "format": "date-time"}}}}}},
                 "400": _ERROR, "404": _ERROR, "415": _ERROR},
         }},
+        "/api/drift/restart": {"post": {
+            "tags": ["versions"], "operationId": "restartWorkload",
+            "summary": "Have Argo CD restart the workload behind a row",
+            "description": "Runs Argo CD's `restart` action, under the account of `argocd.restart`'s token; kube-drift's own "
+                           "cluster access stays read-only. Only for a row with both `restart_command` and `argocd_resource`, "
+                           "and only for signed-in people: an API key gets 403.",
+            "requestBody": _body({"type": "object", "required": ["id"], "properties": {
+                "id": {"type": "string", "description": "The row's `id`."}}}),
+            "responses": {
+                "200": {"description": "Argo CD accepted it", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "status": {"enum": ["restarting"]}, "application": {"type": "string"}}}}}},
+                "400": _ERROR, "403": {**_ERROR, "description": "Called with an API key."}, "404": _ERROR,
+                "409": {**_ERROR, "description": "That row isn't one Argo CD can restart."},
+                "415": _ERROR, "502": {**_ERROR, "description": "Argo CD refused it, or couldn't be reached."},
+                "503": {**_ERROR, "description": "No Argo CD address or token configured."}},
+        }},
         "/api/renovate/approve": {"post": {
             "tags": ["renovate"], "operationId": "approveRenovateUpdate",
             "summary": "Approve an update Renovate is waiting on",
@@ -427,6 +443,7 @@ SPEC: dict = {
                         "with ignored updates count under `ignored` instead of their status, and not in `total`.",
                         "additionalProperties": {"type": "integer"}},
             "components": {"type": "array", "items": {"$ref": "#/components/schemas/Component"}},
+            "can_restart": {"type": "boolean", "description": "An Argo CD address and token are configured, so `POST /api/drift/restart` can work."},
             "ignore_enabled": {"type": "boolean", "description": "False when kube-drift can't save ignores."},
             "renovate": {"type": "object", "description": "Present only with `renovate.enabled`.", "properties": {
                 "received_at": {"type": ["string", "null"], "format": "date-time", "description": "The last report; null before the first."},
@@ -499,6 +516,12 @@ SPEC: dict = {
             "pinned_digest": {"type": ["string", "null"]}, "running_digests": {"type": "array", "items": {"type": "string"}},
             "remote_digest": {"type": ["string", "null"]},
             "digest_current": {"type": "boolean", "description": "The deployed image is the tag's current image: the pinned digest when the manifest pins one, else what the pods report."},
+            "restart_target": {"type": "string", "description": "The workload behind this row, as kubectl names it (deployment/web). Not on a group's row."},
+            "pull_policy": {"type": ["string", "null"], "description": "The container's imagePullPolicy."},
+            "update_strategy": {"type": ["string", "null"], "description": "The workload's update strategy (RollingUpdate, Recreate, OnDelete)."},
+            "argocd_resource": {"type": "object", "description": "The workload as Argo CD names it, when an Application owns it: what `POST /api/drift/restart` sends."},
+            "restart_command": {"type": "string", "description": "When the tag's image moved and the tag didn't: the kubectl command that replaces the pods so they pull it. kube-drift never runs it."},
+            "restart_hint": {"type": "string", "description": "In place of `restart_command`, why a restart wouldn't take this row to the tag's image."},
             "ref": {"type": "string", "description": "Where to read release notes: the config's `ref`, else for images "
                     "the source repo's releases page (or docs/home page) from the image's OCI labels, else its registry page. "
                     "Empty when none is known."},

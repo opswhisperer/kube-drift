@@ -6,6 +6,24 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- **A re-pushed tag gets a Restart button.** When a tag's image moved and the tag didn't, git has
+  nothing to change, so Renovate has nothing to offer: new pods are the whole update. The row now
+  opens the `kubectl rollout restart` command to copy (`restart_command`), with
+  `orphans.kubectl_context` in it when set. kube-drift still never runs it. A row a restart can't
+  help says why instead (`restart_hint`): `imagePullPolicy` other than `Always`, or an `OnDelete`
+  update strategy. A digest pin and a group of workloads get neither.
+- **Restart now, through Argo CD.** With a token for Argo CD's API (`argocd.restart`, env
+  `ARGOCD_TOKEN`), that dialog can also restart a workload an Application owns, by running Argo CD's
+  own `restart` action (`POST /api/drift/restart`). Argo CD does the write, so kube-drift's cluster
+  access stays read-only. Signed-in people only: API keys get 403. Without a token nothing changes.
+
+### Fixed
+
+- **"Its own rules hold this back" no longer appears on a re-pushed or floating tag.** No Renovate
+  rule was involved: it compares tags, and it skips floating ones, and the row now says so.
+
 ## [0.8.5] - 2026-11-03
 
 ### Changed

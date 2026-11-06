@@ -368,7 +368,7 @@ function versionCell(c){
   if(c.ignored) sub.push(`<span class="ignored-note">${esc(ignoreText(c.ignored))}</span>`);
   if(!c.latest && c.status!=='outdated') sub.push(c.error?'lookup failed':c.source&&c.source.type==='none'?'not tracked':c.status==='current'?'':
     c.digest_error?`registry said ${esc(c.digest_error)}`:c.digest_current===true?'image matches its tag, no comparable version found':'no comparable version found');
-  return h+(sub.filter(Boolean).length?subLine(sub):'')+renoLine(c);
+  return h+(sub.filter(Boolean).length?subLine(sub):'')+renoLine(c)+restartLine(c);
 }
 // Renovate (renovate.enabled): an update waiting for approval gets an Upgrade button (it ticks the box in the
 // repository's Dependency Dashboard), an open PR its link. A row that is behind upstream with neither of those
@@ -401,7 +401,10 @@ function chartNote(c){
 // is configured (renovate.forge.url); the file also needs the default branch, which a report brings in.
 // Renovate tracks the row and wants nothing. Whether that means anything depends on when its run read
 // that repository: before this row was checked, it hasn't seen what we see, and its silence says nothing.
+// The tag stayed put and its image moved: Renovate compares tags, so its silence is no rule of its own.
+const sameTag=c=>c.digest_current===false && !c.pinned_digest && (c.floating || c.latest===c.installed);
 function renoQuiet(c,r,short){
+  if(sameTag(c)) return c.floating ? 'it skips floating tags' : "it compares tags, and this tag didn't change";
   const out=c.status==='outdated'||c.images_outdated;
   if(!r.checked_at) return 'nothing pending';
   if(!out) return `nothing pending (looked ${rel(r.checked_at)})`;
@@ -410,6 +413,25 @@ function renoQuiet(c,r,short){
                  : `but its last look at that repository was ${rel(r.checked_at)}, before this check found ${esc(c.latest||'the update')}`;
   return short ? `nothing pending, and it looked ${rel(r.checked_at)}: its own rules hold this back`
                : `and it looked ${rel(r.checked_at)}, after this check: nothing pending, so its rules are holding the update back`;
+}
+// A re-pushed tag has nothing for git to change: the update is new pods, and that takes a person running
+// the command (kube-drift never writes to the cluster). A row a restart can't help says why instead.
+const canRestart=c=>!!(state.data.can_restart && c.argocd_resource);
+function restartLine(c){
+  if(c.restart_command) return `<div class="reno"><button data-restart="${esc(c.id)}" title="Replace these pods so they pull the new image">${canRestart(c)?'Restart…':'Restart command…'}</button></div>`;
+  return c.restart_hint ? `<div class="reno"><span class="hint">${esc(c.restart_hint)}</span></div>` : '';
+}
+async function restartRow(id){
+  const c=(state.data.components||[]).find(x=>x.id===id); if(!c?.restart_command) return;
+  const argo=canRestart(c);
+  const p=modal({title:`Restart ${c.name}`, ok:argo?'Restart now':null,
+    body:`<p><code>${esc(c.tag)}</code> points at a new image, so there is nothing to change in git: new pods are the update, and they pull it because this container's pull policy is <code>Always</code>. This replaces every pod of <code>${esc(c.restart_target)}</code>. ${argo?`<b>Restart now</b> asks Argo CD to do it, or run this in a terminal with access to the cluster.`:'Run it in a terminal with access to the cluster.'}</p>
+    ${c.update_strategy==='Recreate'?`<div class="warn">This workload uses the Recreate strategy: it is down until its new pods are ready.</div>`:''}
+    <div style="margin-top:10px"><button type="button" class="primary" id="dlg-copy">Copy command</button> <span class="hint" id="dlg-copied"></span></div><pre class="script" id="dlg-script">${esc(c.restart_command)}</pre>`});
+  $('#dlg-copy').addEventListener('click',async()=>{ $('#dlg-copied').textContent=await copyText(c.restart_command)?'Copied — run it, then Check now.':'Selected — press ⌘C / Ctrl+C.'; });
+  if(!(await p).ok) return;
+  const out=await call('/api/drift/restart',{id});
+  toast(`Argo CD is restarting ${esc(c.restart_target)} (${esc(out.application)}). Check now once its pods are up.`);
 }
 function renoText(c){
   const r=c.renovate; if(!r) return '';
@@ -637,6 +659,7 @@ document.addEventListener('click',e=>{
   const th=e.target.closest('th[data-k]'); if(th){ if(state.sort===th.dataset.k) state.asc=!state.asc; else { state.sort=th.dataset.k; state.asc=true; } render(); refocus(`th[data-k="${th.dataset.k}"] button`); return; }
   const grp=e.target.closest('tr.grp'); if(grp){ const g=grp.dataset.g; state.shut.has(g)?state.shut.delete(g):state.shut.add(g); render(); refocus(`tr.grp[data-g="${CSS.escape(g)}"]`); return; }
   const rb=e.target.closest('[data-reno]'); if(rb){ approveReno(rb.dataset.reno).catch(err=>toast('Approve failed: '+esc(err.message))); return; }
+  const xb=e.target.closest('[data-restart]'); if(xb){ restartRow(xb.dataset.restart).catch(err=>toast('Restart failed: '+esc(err.message))); return; }
   const kb=e.target.closest('[data-chk]'); if(kb){ recheck(kb.dataset.chk); return; }
   const ib=e.target.closest('[data-ign]'); if(ib){ ignoreUpdate(ib.dataset.ign).catch(err=>toast('Ignore failed: '+esc(err.message))); return; }
   const cb=e.target.closest('[data-cfg]'); if(cb){ run(()=>configure(cb.dataset.cfg)); return; }

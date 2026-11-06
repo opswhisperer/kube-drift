@@ -107,10 +107,18 @@ helm:
 #               you use Applications in any namespace. Default: [argocd]
 #   url:        Argo CD's own address. Set it and each row's Application is a link to it.
 #               Default: none — the Application is named but not linked.
+#   restart:    Symptom: a row whose tag moved gives you a kubectl command, and you'd rather press a
+#               button. Set `url` above and put a token in $ARGOCD_TOKEN (Secret kube-drift-credentials,
+#               key argocd-token) and the row offers Restart now, which runs Argo CD's restart action.
+#               The token's account needs action/apps/<Kind>/restart. kube-drift itself still can't
+#               write to the cluster, and API keys can't use this. Keys below only if the defaults don't fit.
 argocd:
   # enabled: true
   # namespaces: [argocd]
   # url: https://argocd.example.com
+  # restart:
+  #   url: http://argocd-server.argocd.svc   # the API, when kube-drift can't reach `url`
+  #   token_env: ARGOCD_TOKEN
 
 # ── images ───────────────────────────────────────────────────────────────────────────────
 # Symptoms and fixes for containers:
