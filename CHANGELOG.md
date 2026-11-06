@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-05
+
 ### Added
 
 - **A re-pushed tag gets a Restart button.** When a tag's image moved and the tag didn't, git has
