@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-11-07
+
 ### Fixed
 
 - **A dependency Renovate holds back says so.** A row whose dependency Renovate skips (a package rule
