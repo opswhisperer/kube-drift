@@ -155,6 +155,8 @@ class Annotate(unittest.TestCase):
         self.assertFalse(renovate.behind({**row, "status": "current", "images_outdated": 0}))
         # an update already waiting needs no run
         self.assertFalse(renovate.behind({**row, "renovate": {**row["renovate"], "state": "approve"}}))
+        # a dependency Renovate's rules hold back never moves, so a run would only say the same thing again
+        self.assertFalse(renovate.behind({**row, "renovate": {**row["renovate"], "skipped": "disabled"}}))
 
     def _chart_doc(self, current, branches=()):
         """The platform repository with one podinfo chart dependency pinned at `current`."""

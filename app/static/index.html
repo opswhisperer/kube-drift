@@ -403,7 +403,14 @@ function chartNote(c){
 // that repository: before this row was checked, it hasn't seen what we see, and its silence says nothing.
 // The tag stayed put and its image moved: Renovate compares tags, so its silence is no rule of its own.
 const sameTag=c=>c.digest_current===false && !c.pinned_digest && (c.floating || c.latest===c.installed);
+// Renovate's skipReason: `disabled` and `ignored` come from its own rules; anything else means it can't use the reference.
+const RULE_SKIPS=new Set(['disabled','ignored']);
 function renoQuiet(c,r,short){
+  if(r.skipped) return RULE_SKIPS.has(r.skipped)
+    ? (short ? `but held by a Renovate rule (${esc(r.skipped)}), so it won't offer this update`
+             : `but a Renovate rule holds it (${esc(r.skipped)}), so it won't offer ${esc(c.latest||'an update')} however often it looks`)
+    : (short ? `but skipped (${esc(r.skipped)}), so it won't offer this update`
+             : `but Renovate skips it (${esc(r.skipped)}), so it won't offer ${esc(c.latest||'an update')}`);
   if(sameTag(c)) return c.floating ? 'it skips floating tags' : "it compares tags, and this tag didn't change";
   const out=c.status==='outdated'||c.images_outdated;
   if(!r.checked_at) return 'nothing pending';
@@ -442,7 +449,7 @@ function renoText(c){
     case 'pr': return `${link(r.pr_url,'PR #'+r.pr)} open${where}${also}`;
     case 'pending': return `${esc(r.result||'pending')}${where} · branch ${esc(r.branch)}${also}`;
     case 'merged': return `merged${where}: that file is at ${esc(r.in_git)} and this is still on ${esc(c.installed||'an older version')}, so what is left is a sync, not an approval${also}`;
-    case 'tracked': return `tracked${where}, ${renoQuiet(c,r)}${r.skipped?` (skipped: ${esc(r.skipped)})`:''}${also}`;
+    case 'tracked': return `tracked${where}, ${renoQuiet(c,r)}${also}`;
     default: return chartNote(c)||'not tracked by Renovate';
   } })();
   return {html};

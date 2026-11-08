@@ -395,8 +395,9 @@ def trigger(cfg: dict, repos: list[str]) -> dict:
 
 def behind(comp: dict) -> bool:
     """True when Renovate tracks this row, wants nothing, and last read that repository before the check that
-    found the update. Then its silence says nothing yet, and a run is worth asking for."""
+    found the update. Then its silence says nothing yet, and a run is worth asking for. A dependency Renovate
+    skips (a rule's `enabled: false`, an ignored dependency) stays silent however often it looks."""
     r = comp.get("renovate") or {}
-    if r.get("state") != "tracked" or not (comp.get("status") == "outdated" or comp.get("images_outdated")):
+    if r.get("state") != "tracked" or r.get("skipped") or not (comp.get("status") == "outdated" or comp.get("images_outdated")):
         return False
     return bool(r.get("checked_at") and comp.get("checked_at") and r["checked_at"] < comp["checked_at"])

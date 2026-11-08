@@ -6,6 +6,14 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dependency Renovate holds back says so.** A row whose dependency Renovate skips (a package rule
+  with `enabled: false`, an ignored dependency) read "tracked … its last look was before this check", as
+  if Renovate just hadn't caught up, with the skip reason tacked on the end. It now says a Renovate rule
+  holds it and won't offer the update (or that Renovate skips it, for a reason other than a rule), and
+  Check now no longer asks Renovate to look at that repository again for it.
+
 ## [0.8.6] - 2026-11-05
 
 ### Added
