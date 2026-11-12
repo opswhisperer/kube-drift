@@ -8,7 +8,11 @@ with JSON output, then enrich each finding with what kor doesn't look at:
   those are kor false positives, flagged "in-use";
 - who manages it (Helm release, cert-manager Certificate, Argo CD, managed-by label) —
   deleting those is usually undone by the manager, so they're flagged "managed";
+- which controller wrote it, when no person or deploy tool did (managedFields) — a controller
+  reads its own objects through the API, where kor can't see it, so those are "managed" too;
 - leftovers of Helm releases that are no longer installed (still "orphan", with a note);
+- older copies of a generated ConfigMap or Secret (kustomize's name-suffix hash) whose newer
+  copy is the one in use — "orphan", even when Argo CD or Helm still tracks them;
 - protect rules (system:/kubeadm: RBAC, kubeadm ConfigMaps, …) that can never be deleted.
 
 kube-drift never changes the cluster. Export and delete are shell scripts the user copies
@@ -73,7 +77,24 @@ DEFAULT_RESOURCES = [
 DEFAULT_KOR_ARGS = ["--ignore-owner-references", "--older-than=1h"]
 # Bump when the shape of a scan result changes; a persisted scan of another format is
 # discarded on startup (and rescanned) instead of being served to code that can't read it.
-FORMAT = 2
+FORMAT = 3
+
+# kustomize's configMapGenerator/secretGenerator suffix: "-" + 10 characters of its own alphabet
+# (the first 10 hex digits of the content hash, with 0 1 3 a e swapped for g h k m t).
+_GENERATED = re.compile(r"^(.+)-([2456789bcdfghkmt]{10})$")
+
+# managedFields managers. A person or a deploy tool wrote the object: its being unused is
+# for a person to judge, so no evidence.
+_DEPLOY_TOOL = re.compile(r"^(kubectl|helm|argocd|kustomize|flux|fleet|kubeadm|k9s|lens|headlamp|octant|dashboard|rancher|"
+                          r"terraform|pulumi|ansible|skaffold|tilt|kapp|oc$|mozilla|before-first-apply)", re.I)
+# Client libraries' default names: they don't say who wrote it, so no evidence either.
+_ANONYMOUS = re.compile(r"^(unknown|go-http-client|openapi-generator|python|curl|node-fetch|axios|okhttp|java|fabric8|kube-rs|swagger)", re.I)
+# Kubernetes itself. It writes to nearly everything (a Job's status, a Deployment's revision),
+# so it says nothing about who the object belongs to.
+_KUBERNETES = re.compile(r"^(kube-controller-manager|kube-apiserver|kube-scheduler|kube-proxy|kubelet|cloud-controller-manager|"
+                         r"k3s|k0s|rke2|microk8s)$")
+# Volumes are always written by a provisioner, used or not; Pods by the kubelet.
+_NO_WRITER_EVIDENCE = {"PersistentVolume", "PersistentVolumeClaim", "VolumeAttachment", "Pod"}
 
 # Never offered a delete command, whatever the config says. kube-drift's own resources are
 # added per scan, since its namespace comes from POD_NAMESPACE.
@@ -214,6 +235,44 @@ def parse_kor(raw: dict) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- scan
+def written_by(kind: str, m: dict) -> Optional[tuple[str, str]]:
+    """(manager, time) of the controller that last wrote the object, from managedFields — only
+    when no person, deploy tool or anonymous client wrote to it as well."""
+    if kind in _NO_WRITER_EVIDENCE:
+        return None
+    best = None
+    for f in m.get("managedFields") or []:
+        mgr = str(f.get("manager") or "").strip()
+        if f.get("subresource") or not mgr or _KUBERNETES.match(mgr):
+            continue
+        if _DEPLOY_TOOL.match(mgr) or _ANONYMOUS.match(mgr):
+            return None
+        if best is None or str(f.get("time") or "") > best[1]:
+            best = (mgr, str(f.get("time") or ""))
+    return best
+
+
+def superseded(found: list[dict], meta: dict[tuple[str, str, str], dict]) -> dict[tuple[str, str, str], dict]:
+    """Findings that are another copy of a generated ConfigMap/Secret (`<base>-<kustomize hash>`)
+    while a copy kor did not flag exists: (kind, ns, name) -> {base, by, newer}. With several
+    copies in use, `by` is the newest."""
+    flagged = {(f["kind"], f["namespace"], f["name"]) for f in found}
+    in_use: dict[tuple[str, str, str], tuple[str, str]] = {}  # (kind, ns, base) -> (created, name)
+    for (kind, ns, name), m in meta.items():
+        g = _GENERATED.match(name)
+        if kind in ("ConfigMap", "Secret") and g and (kind, ns, name) not in flagged:
+            k, cand = (kind, ns, g.group(1)), (str(m.get("creationTimestamp") or ""), name)
+            in_use[k] = max(in_use.get(k, cand), cand)
+    out = {}
+    for kind, ns, name in flagged:
+        g = _GENERATED.match(name)
+        cur = in_use.get((kind, ns, g.group(1))) if g else None
+        if cur:
+            created = str((meta.get((kind, ns, name)) or {}).get("creationTimestamp") or "")
+            out[(kind, ns, name)] = {"base": g.group(1), "by": cur[1], "newer": bool(created and cur[0] > created)}
+    return out
+
+
 def _secret_refs(obj, out: set[str]):
     """Collect Secret names from an issuer spec: *SecretRef{name}, secretName."""
     if isinstance(obj, dict):
@@ -289,9 +348,10 @@ class OrphanScanner:
             return None
 
     @staticmethod
-    def hints(m: dict, releases: Optional[set[tuple[str, str]]] = None) -> list[dict]:
+    def hints(m: dict, releases: Optional[set[tuple[str, str]]] = None, kind: str = "") -> list[dict]:
         """Evidence from metadata, as {type, source, text}: `recreated` (something will put it back
-        if deleted) or `leftover` (its owner is gone)."""
+        if deleted), `controller` (a controller wrote it; only when nothing says who puts it back)
+        or `leftover` (its owner is gone)."""
         ann, lab = m.get("annotations") or {}, m.get("labels") or {}
         out = []
         rel, rel_ns = ann.get("meta.helm.sh/release-name"), ann.get("meta.helm.sh/release-namespace", "")
@@ -307,6 +367,11 @@ class OrphanScanner:
         mb = lab.get("app.kubernetes.io/managed-by")
         if mb and mb.lower() != "helm":
             out.append({"type": "recreated", "source": f"managed-by:{mb}", "text": f"{mb} manages it (managed-by label) and may put it back"})
+        wrote = None if out else written_by(kind, m)
+        if wrote:
+            out.append({"type": "controller", "source": f"written-by:{wrote[0]}",
+                        "text": f"{wrote[0]} wrote it{', last on ' + wrote[1][:10] if wrote[1] else ''}, and no person or deploy tool did: "
+                                "a controller reads its own objects through the API, where kor can't see it"})
         return out
 
     def run(self) -> dict:
@@ -321,6 +386,7 @@ class OrphanScanner:
         meta = self.metadata({f["kind"] for f in found})
         refs = self.references()
         releases = self.helm_releases()
+        older = superseded(found, meta)
         protect_rules = BUILTIN_PROTECT + [
             {"namespace": self.self_namespace, "name_regex": r"^kube-drift", "why": "kube-drift itself"},
         ] + (self.cfg.get("protect") or [])
@@ -331,14 +397,22 @@ class OrphanScanner:
             it = {**f, "id": key(kind, ns, name), "known_kind": kind in KINDS, "namespaced": KINDS.get(kind, ("", "", True))[2]}
             it["created"] = (m or {}).get("creationTimestamp")
             used = [{"type": "in-use", "source": src, "text": t} for src, t in refs.get((kind, ns, name), [])]
-            it["hints"] = used + (self.hints(m, releases) if m else [])
+            it["hints"] = used + (self.hints(m, releases, kind) if m else [])
+            sup = older.get((kind, ns, name))
+            if sup:
+                # Nothing renders this copy any more, so whoever tracks it won't put it back.
+                what = f"generated {kind} {sup['base']}"
+                it["hints"] = [h for h in it["hints"] if h["type"] not in ("recreated", "controller")] + [{
+                    "type": "leftover", "source": "superseded",
+                    "text": (f"an older copy of {what}: {sup['by']} replaced it and is the one in use" if sup["newer"]
+                             else f"another copy of {what}: {sup['by']} is the one in use")}]
             types = {h["type"] for h in it["hints"]}
             prot = next((r for r in protect_rules if rule_match(r, kind, ns, name)), None)
             if prot:
                 it["status"], it["protected"] = "protected", prot.get("why") or "protect rule"
             elif "in-use" in types:
                 it["status"] = "in-use"
-            elif "recreated" in types:
+            elif types & {"recreated", "controller"}:
                 it["status"] = "managed"
             else:
                 it["status"] = "orphan"

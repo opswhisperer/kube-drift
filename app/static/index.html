@@ -155,7 +155,7 @@ button.danger:hover,button.danger:focus-visible{color:var(--major);border-color:
 .ev{margin:5px 0 0;padding:0;list-style:none;font-size:12.5px;color:var(--muted)}
 .ev li{display:flex;gap:10px;margin-top:3px}
 .tag{flex:none;width:76px;font-size:12px;font-weight:650;color:var(--faint)}
-.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag{color:var(--accent)} .ev .leftover .tag{color:var(--minor)} .ev .protected .tag{color:var(--unk)}
+.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag,.ev .controller .tag{color:var(--accent)} .ev .leftover .tag{color:var(--minor)} .ev .protected .tag{color:var(--unk)}
 .kor{display:flex;gap:10px}
 
 /* config */
@@ -705,10 +705,10 @@ $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; awa
 
 /* ------------------------------------------------------------------ orphaned resources */
 const OORDER = { orphan:0, managed:1, 'in-use':2, protected:3, ignored:4 };
-const OSEG = [['orphan','orphaned','--minor'],['in-use','in use (kor missed it)','--ok-bar'],['managed','managed (would come back)','--accent'],['protected','protected','--unk-bar'],['ignored','ignored','--line']];
-const BADGE = { 'in-use':['in use','Something uses it that kor does not check — kor is wrong here'], managed:['managed','Its owner would put it back if you deleted it'],
+const OSEG = [['orphan','orphaned','--minor'],['in-use','in use (kor missed it)','--ok-bar'],['managed','managed (an owner or a controller)','--accent'],['protected','protected','--unk-bar'],['ignored','ignored','--line']];
+const BADGE = { 'in-use':['in use','Something uses it that kor does not check — kor is wrong here'], managed:['managed','Its owner would put it back if you deleted it, or a controller wrote it and reads it through the API'],
   orphan:['orphan','Nothing uses or manages it'], protected:['protected','Never offered a delete command'], ignored:['ignored','Hidden from the counts'] };
-const TAG = { 'in-use':'In use', recreated:'Recreated', leftover:'Leftover', gone:'Gone?' };
+const TAG = { 'in-use':'In use', recreated:'Recreated', controller:'Controller', leftover:'Leftover', gone:'Gone?' };
 function age(iso){ if(!iso) return '—'; const d=(Date.now()-new Date(iso))/86400000; return d<1?Math.max(1,Math.round(d*24))+'h':d<60?Math.round(d)+'d':Math.round(d/30)+'mo'; }
 function ostatus(i){ return i.ignored?'ignored':i.status; }
 function toast(msg,ms=5000){ const t=$('#toast'); t.innerHTML=msg; t.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>t.hidden=true,ms); }
@@ -741,8 +741,9 @@ function label(i){ return `${i.kind} ${i.namespace?i.namespace+'/':''}${i.name}`
 
 /* ---- ignore rules: same matching as app/orphans.py rule_match ---- */
 const SRC = { gateway:'used by a Gateway (TLS)', 'cert-manager-issuer':'used by a cert-manager issuer', 'cert-manager':'issued by cert-manager',
-  helm:'owned by an installed Helm release', 'helm-leftover':'left over from an uninstalled Helm release', argocd:'managed by Argo CD' };
-const srcText=x=>SRC[x]||(x.startsWith('managed-by:')?'managed by '+x.slice(11):x);
+  helm:'owned by an installed Helm release', 'helm-leftover':'left over from an uninstalled Helm release', argocd:'managed by Argo CD',
+  superseded:'replaced by another copy of the same generated object' };
+const srcText=x=>SRC[x]||(x.startsWith('managed-by:')?'managed by '+x.slice(11):x.startsWith('written-by:')?'written by '+x.slice(11):x);
 const plural=k=>/(s|x)$/.test(k)?k+'es':/[^aeiou]y$/.test(k)?k.slice(0,-1)+'ies':k+'s';
 function describeRule(r){
   return [r.kind?plural(r.kind):'Anything', r.source?srcText(r.source):'', r.namespace?`in ${r.namespace}`:'',
@@ -805,7 +806,7 @@ async function doCommands(ids, action){
   if(action==='delete'){
     const inUse=used.filter(i=>i.status==='in-use'), managed=used.filter(i=>i.status==='managed');
     if(inUse.length) warns.push(`${inUse.length} are in use by something kor doesn't check (e.g. a Gateway's TLS certificate) — deleting breaks it.`);
-    if(managed.length) warns.push(`${managed.length} would be put back by their owner (Helm, cert-manager, an operator) — remove them there instead.`);
+    if(managed.length) warns.push(`${managed.length} are managed: their owner would put them back (Helm, cert-manager, an operator), or the controller that wrote them still reads them — remove them there instead.`);
     if(kinds.has('PersistentVolumeClaim')||kinds.has('PersistentVolume')) warns.push('Volumes: the backup is the manifest only, not the data. A PV with reclaimPolicy Delete loses its data.');
     if(kinds.has('CustomResourceDefinition')) warns.push('Deleting a CRD deletes every object of that type.');
   }

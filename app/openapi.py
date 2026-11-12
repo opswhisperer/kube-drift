@@ -630,8 +630,12 @@ SPEC: dict = {
             "namespaced": {"type": "boolean"},
         }},
         "Hint": {"type": "object", "properties": {
-            "type": {"enum": ["in-use", "recreated", "leftover", "gone"]},
-            "source": {"type": "string", "description": "Match it with Rule.source: cert-manager, gateway, cert-manager-issuer, helm, helm-leftover, argocd, managed-by:<name>, gone."},
+            "type": {"enum": ["in-use", "recreated", "controller", "leftover", "gone"],
+                     "description": "`in-use`: something kor doesn't check uses it. `recreated`: its owner would put it back. `controller`: a controller "
+                                    "wrote it and no person or deploy tool did. `leftover`: its owner is gone, or another copy replaced it. "
+                                    "`gone`: not found when looked up."},
+            "source": {"type": "string", "description": "Match it with Rule.source: cert-manager, gateway, cert-manager-issuer, helm, helm-leftover, argocd, "
+                                                        "managed-by:<name>, written-by:<manager>, superseded, gone."},
             "text": {"type": "string"},
         }},
         "Ignored": {"type": "object", "description": "Present only on ignored findings.", "properties": {

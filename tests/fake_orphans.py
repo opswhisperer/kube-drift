@@ -20,7 +20,8 @@ KOR_JSON = {
         "sandbox": [{"name": "demo-db-credentials", "reason": "Secret is not used in any pod, container, or ingress"}],
     },
     "Pvc": {"media": [{"name": "old-uploads", "reason": "PVC is not in use"}]},
-    "Job": {"db": [{"name": "backup-verify", "reason": "Job has completed"}]},
+    "Job": {"db": [{"name": "backup-verify", "reason": "Job has completed"}],
+            "backup": [{"name": "repo-maintain-1775037600", "reason": "Job has completed"}]},
     "ClusterRoleBinding": {"": [
         {"name": "kubeadm:apiserver-kubelet-client", "reason": "ClusterRoleBinding references a non-existing ClusterRole"},
         {"name": "legacy-dashboard", "reason": "ClusterRoleBinding references a non-existing ClusterRole"}]},
@@ -44,8 +45,13 @@ def _obj(api, kind, ns, name, **extra):
 
 OBJECTS = {
     ("ConfigMap", "apps", "istio-ca-crl"): _obj("v1", "ConfigMap", "apps", "istio-ca-crl", data={"ca-crl.pem": ""}),
+    # an older copy of a generated ConfigMap: Argo CD still tracks it, but web-assets-8k9f6b5cmd is the one mounted
     ("ConfigMap", "web", "web-assets-25thdt57cm"): _obj("v1", "ConfigMap", "web", "web-assets-25thdt57cm",
-                                                               data={"index.html": "<html>\n  <body>hi</body>\n</html>\n"}),
+                                                               data={"index.html": "<html>\n  <body>hi</body>\n</html>\n"},
+                                                               metadata={"annotations": {
+                                                                   "argocd.argoproj.io/tracking-id": "web:/ConfigMap:web/web-assets-25thdt57cm"}}),
+    ("ConfigMap", "web", "web-assets-8k9f6b5cmd"): _obj("v1", "ConfigMap", "web", "web-assets-8k9f6b5cmd", data={"index.html": "<html/>\n"},
+                                                               metadata={"creationTimestamp": "2026-05-01T10:00:00Z"}),
     ("ConfigMap", "monitoring", "dashboard-legacy"): _obj(
         "v1", "ConfigMap", "monitoring", "dashboard-legacy", data={"nut.json": "{}"},
         metadata={"annotations": {"kubectl.kubernetes.io/last-applied-configuration": "{...}"}}),
@@ -67,6 +73,14 @@ OBJECTS = {
         spec={"selector": {"matchLabels": {"batch.kubernetes.io/controller-uid": "abc"}},
               "template": {"metadata": {"labels": {"batch.kubernetes.io/controller-uid": "abc", "controller-uid": "abc"}},
                            "spec": {"containers": [{"name": "v", "image": "busybox"}], "restartPolicy": "Never"}}},
+        status={"succeeded": 1}),
+    # made by a backup operator every hour and pruned by it: no owner reference, no labels that say so
+    ("Job", "backup", "repo-maintain-1775037600"): _obj(
+        "batch/v1", "Job", "backup", "repo-maintain-1775037600",
+        metadata={"managedFields": [{"manager": "backup-operator", "operation": "Update", "time": "2026-04-01T10:00:00Z"},
+                                    {"manager": "kube-controller-manager", "operation": "Update", "subresource": "status",
+                                     "time": "2026-04-01T10:05:00Z"}]},
+        spec={"template": {"spec": {"containers": [{"name": "m", "image": "busybox"}], "restartPolicy": "Never"}}},
         status={"succeeded": 1}),
     ("ClusterRoleBinding", "", "kubeadm:apiserver-kubelet-client"): _obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "",
                                                                          "kubeadm:apiserver-kubelet-client"),

@@ -287,6 +287,8 @@ orphans:
   #                 helm-leftover          its Helm release was uninstalled
   #                 argocd                 Argo CD manages it
   #                 managed-by:<name>      its app.kubernetes.io/managed-by label is <name>
+  #                 written-by:<manager>   the controller <manager> wrote it, and no person or deploy tool did
+  #                 superseded             another copy of the same generated ConfigMap/Secret is the one in use
   #   why:        your note, shown in the dashboard
   ignore:
     - { kind: ConfigMap, name_regex: '^istio-ca-(root-cert|crl)$', why: istiod writes these into every namespace }
