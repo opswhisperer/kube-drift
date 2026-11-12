@@ -626,6 +626,8 @@ SPEC: dict = {
             "protected": {"type": "string", "description": "Why it's protected (only when status is protected)."},
             "ignored": {"$ref": "#/components/schemas/Ignored"},
             "created": {"type": ["string", "null"], "format": "date-time"},
+            "labels": {"type": "object", "additionalProperties": {"type": "string"},
+                       "description": "The object's labels (empty when it was not found). Rule.label matches them."},
             "known_kind": {"type": "boolean", "description": "kube-drift can write commands for this kind."},
             "namespaced": {"type": "boolean"},
         }},
@@ -635,7 +637,7 @@ SPEC: dict = {
                                     "wrote it and no person or deploy tool did. `leftover`: its owner is gone, or another copy replaced it. "
                                     "`gone`: not found when looked up."},
             "source": {"type": "string", "description": "Match it with Rule.source: cert-manager, gateway, cert-manager-issuer, helm, helm-leftover, argocd, "
-                                                        "managed-by:<name>, written-by:<manager>, superseded, gone."},
+                                                        "managed-by:<name>, written-by:<manager>, superseded, sidecar, gone."},
             "text": {"type": "string"},
         }},
         "Ignored": {"type": "object", "description": "Present only on ignored findings.", "properties": {
@@ -649,7 +651,10 @@ SPEC: dict = {
             "kind": {"type": "string", "examples": ["Secret"]},
             "namespace": {"type": "string"},
             "name": {"type": "string", "description": "Exact name (config rules only)."},
+            "name_contains": {"type": "string", "description": "Part of the name, matched anywhere in it, ignoring case.", "examples": ["dashboard"]},
             "name_regex": {"type": "string", "description": "Python regex, searched anywhere in the name."},
+            "label": {"type": "string", "description": "`key` (the object carries that label, any value) or `key=value`.",
+                      "examples": ["grafana_dashboard=1"]},
             "source": {"type": "string", "description": "Matches a finding's Hint.source.", "examples": ["cert-manager"]},
         }},
         "Rule": {"allOf": [{"$ref": "#/components/schemas/RuleMatch"}, {"type": "object", "properties": {

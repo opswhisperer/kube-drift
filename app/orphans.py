@@ -4,8 +4,9 @@ kor (github.com/yonahd/kor) does the detection — "ConfigMap is not used in any
 "RoleBinding references a non-existing ServiceAccount", ... We run it as a subprocess
 with JSON output, then enrich each finding with what kor doesn't look at:
 
-- references kor misses (Gateway API TLS certificateRefs, cert-manager issuer secrets) —
-  those are kor false positives, flagged "in-use";
+- references kor misses (Gateway API TLS certificateRefs, cert-manager issuer secrets, objects a
+  k8s-sidecar container loads by label, such as Grafana dashboards) — those are kor false
+  positives, flagged "in-use";
 - who manages it (Helm release, cert-manager Certificate, Argo CD, managed-by label) —
   deleting those is usually undone by the manager, so they're flagged "managed";
 - which controller wrote it, when no person or deploy tool did (managedFields) — a controller
@@ -77,7 +78,7 @@ DEFAULT_RESOURCES = [
 DEFAULT_KOR_ARGS = ["--ignore-owner-references", "--older-than=1h"]
 # Bump when the shape of a scan result changes; a persisted scan of another format is
 # discarded on startup (and rescanned) instead of being served to code that can't read it.
-FORMAT = 3
+FORMAT = 4
 
 # kustomize's configMapGenerator/secretGenerator suffix: "-" + 10 characters of its own alphabet
 # (the first 10 hex digits of the content hash, with 0 1 3 a e swapped for g h k m t).
@@ -135,17 +136,25 @@ def object_path(kind: str, namespace: str, name: str) -> str:
     return f"{prefix}/{plural}/{q(name)}"
 
 
-def rule_match(rule: dict, kind: str, ns: str, name: str, sources: Iterable[str] = ()) -> bool:
+def rule_match(rule: dict, kind: str, ns: str, name: str, sources: Iterable[str] = (), labels: Optional[dict] = None) -> bool:
     """Every field the rule sets must match. `source` matches the evidence kube-drift found
-    (e.g. "cert-manager", "gateway", "helm", "managed-by:tigera-operator")."""
+    (e.g. "cert-manager", "gateway", "helm", "managed-by:tigera-operator"); `label` is `key`
+    (the object has that label) or `key=value`; `name_contains` is a case-insensitive substring."""
     if rule.get("kind") and (canonical_kind(rule["kind"]) or rule["kind"]) != kind:
         return False
     if rule.get("source") and rule["source"] not in set(sources):
         return False
+    if rule.get("label"):
+        k, eq, v = str(rule["label"]).partition("=")
+        if k not in (labels or {}) or (eq and str(labels[k]) != v):
+            return False
+    if rule.get("name_contains") and str(rule["name_contains"]).lower() not in name.lower():
+        return False
     return _match(rule, ns, name)
 
 
-RULE_KEYS = ("kind", "namespace", "name_regex", "source")
+RULE_KEYS = ("kind", "namespace", "name_contains", "name_regex", "label", "source")
+_LABEL_RULE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?(=[A-Za-z0-9._-]*)?$")
 
 
 def validate_rule(raw: dict) -> dict:
@@ -162,6 +171,8 @@ def validate_rule(raw: dict) -> dict:
             re.compile(rule["name_regex"])
         except re.error as e:
             raise ValueError(f"name_regex: {e}") from None
+    if "label" in rule and not _LABEL_RULE.match(rule["label"]):
+        raise ValueError("label: use key or key=value")
     return rule
 
 
@@ -176,7 +187,7 @@ def apply_ignores(items: list[dict], per_item: dict, user_rules: list[dict], con
         it = dict(it)
         it.pop("config_ignored", None)
         srcs = [h.get("source", "") for h in it.get("hints", [])]
-        hit = [r for r in rules if rule_match(r, it["kind"], it["namespace"], it["name"], srcs)]
+        hit = [r for r in rules if rule_match(r, it["kind"], it["namespace"], it["name"], srcs, it.get("labels"))]
         for r in hit:
             counts[r["id"]] += 1
         if it["id"] in per_item:
@@ -327,6 +338,43 @@ class OrphanScanner:
                     add(ns, n, "cert-manager-issuer", f"secret of cert-manager {kind} {iss['metadata']['name']} (kor doesn't check issuers)")
         return refs
 
+    def label_watchers(self) -> list[dict]:
+        """k8s-sidecar containers (the Grafana chart's dashboard and datasource loaders, and
+        anything else built on kiwigrid/k8s-sidecar): they load every ConfigMap/Secret carrying a
+        label, so nothing mounts those and kor calls them unused. One entry per distinct watch:
+        {label, value (None: any), namespaces (None: all), kinds, by}."""
+        seen: dict[tuple, dict] = {}
+        for pod in self._try_items("/api/v1/pods"):
+            md, spec = pod.get("metadata") or {}, pod.get("spec") or {}
+            owner = next(iter(md.get("ownerReferences") or []), {})
+            who = owner.get("name") or md.get("name", "")
+            if owner.get("kind") == "ReplicaSet":
+                who = who.rsplit("-", 1)[0]
+            for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
+                if "k8s-sidecar" not in (c.get("image") or ""):
+                    continue
+                env = {e.get("name"): e.get("value") for e in c.get("env") or []}
+                if not env.get("LABEL"):
+                    continue
+                nss = (env.get("NAMESPACE") or "").strip()
+                namespaces = None if nss.upper() == "ALL" else frozenset(n.strip() for n in nss.split(",") if n.strip()) or frozenset({md.get("namespace", "")})
+                res = (env.get("RESOURCE") or "configmap").lower()
+                kinds = frozenset({"both": ("ConfigMap", "Secret"), "secret": ("Secret",)}.get(res, ("ConfigMap",)))
+                w = {"label": env["LABEL"], "value": env.get("LABEL_VALUE") or None, "namespaces": namespaces, "kinds": kinds,
+                     "by": f"{md.get('namespace', '')}/{who} (container {c.get('name', '')})"}
+                seen.setdefault((w["label"], w["value"], namespaces, kinds, w["by"]), w)
+        return list(seen.values())
+
+    @staticmethod
+    def watched(watchers: list[dict], kind: str, ns: str, labels: dict) -> list[tuple[str, str]]:
+        out = []
+        for w in watchers:
+            if kind in w["kinds"] and w["label"] in labels and (w["namespaces"] is None or ns in w["namespaces"]) \
+                    and (w["value"] is None or str(labels[w["label"]]) == w["value"]):
+                sel = w["label"] + (f"={w['value']}" if w["value"] is not None else "")
+                out.append(("sidecar", f"loaded by its label {sel} into {w['by']} (kor doesn't check label-watching sidecars)"))
+        return out
+
     def metadata(self, kinds: Iterable[str]) -> dict[tuple[str, str, str], dict]:
         meta = {}
         for kind in kinds:
@@ -386,6 +434,7 @@ class OrphanScanner:
         meta = self.metadata({f["kind"] for f in found})
         refs = self.references()
         releases = self.helm_releases()
+        watchers = self.label_watchers() if {f["kind"] for f in found} & {"ConfigMap", "Secret"} else []
         older = superseded(found, meta)
         protect_rules = BUILTIN_PROTECT + [
             {"namespace": self.self_namespace, "name_regex": r"^kube-drift", "why": "kube-drift itself"},
@@ -396,7 +445,9 @@ class OrphanScanner:
             m = meta.get((kind, ns, name))
             it = {**f, "id": key(kind, ns, name), "known_kind": kind in KINDS, "namespaced": KINDS.get(kind, ("", "", True))[2]}
             it["created"] = (m or {}).get("creationTimestamp")
-            used = [{"type": "in-use", "source": src, "text": t} for src, t in refs.get((kind, ns, name), [])]
+            it["labels"] = dict((m or {}).get("labels") or {})
+            used = [{"type": "in-use", "source": src, "text": t}
+                    for src, t in refs.get((kind, ns, name), []) + self.watched(watchers, kind, ns, it["labels"])]
             it["hints"] = used + (self.hints(m, releases, kind) if m else [])
             sup = older.get((kind, ns, name))
             if sup:
@@ -407,7 +458,7 @@ class OrphanScanner:
                     "text": (f"an older copy of {what}: {sup['by']} replaced it and is the one in use" if sup["newer"]
                              else f"another copy of {what}: {sup['by']} is the one in use")}]
             types = {h["type"] for h in it["hints"]}
-            prot = next((r for r in protect_rules if rule_match(r, kind, ns, name)), None)
+            prot = next((r for r in protect_rules if rule_match(r, kind, ns, name, labels=it["labels"])), None)
             if prot:
                 it["status"], it["protected"] = "protected", prot.get("why") or "protect rule"
             elif "in-use" in types:

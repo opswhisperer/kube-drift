@@ -15,6 +15,15 @@ git tags and on the GitHub releases page.
   maintenance Jobs or a gateway controller's Secrets. Ignore rules can match it: `source: written-by:<manager>`.
   Volumes and Pods are left out, and Kubernetes' own writes don't count.
 
+- Orphans: a ConfigMap or Secret that a `k8s-sidecar` container loads by label is **in use**, with the
+  label and the workload that loads it as evidence (`source: sidecar`). That is how Grafana gets its
+  dashboards and datasources: nothing mounts them, so kor reports every one as unused. kube-drift reads
+  the sidecar's `LABEL`, `LABEL_VALUE`, `NAMESPACE` and `RESOURCE` settings from the running pods.
+- Orphans: ignore and protect rules can match a label (`label: grafana_dashboard` or
+  `label: grafana_dashboard=1`) and part of a name (`name_contains: dashboard`, ignoring case). The
+  Ignore dialog offers the labels your selection shares, and a **Name contains** row with a live count.
+  Each finding now lists its `labels`.
+
 ### Changed
 
 - Orphans: another copy of a generated ConfigMap or Secret (`<name>-<hash>` from kustomize's

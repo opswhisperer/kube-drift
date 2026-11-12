@@ -116,13 +116,46 @@ class Classify(unittest.TestCase):
             {"labels": {"app.kubernetes.io/managed-by": "tigera-operator"}, "managedFields": [{"manager": "operator"}]}, None, "Secret")],
             ["recreated"])
 
+    def test_loaded_by_a_label_watching_sidecar_is_in_use(self):
+        dash = self.by["ConfigMap/monitoring/dashboard-nodes"]
+        self.assertEqual(dash["status"], "in-use")
+        self.assertEqual(dash["labels"], {"grafana_dashboard": "1", "team": "platform"})
+        self.assertEqual(dash["hints"], [{"type": "in-use", "source": "sidecar", "text":
+                                          "loaded by its label grafana_dashboard=1 into monitoring/grafana (container grafana-sc-dashboard) "
+                                          "(kor doesn't check label-watching sidecars)"}])
+        self.assertEqual(self.by["ConfigMap/monitoring/dashboard-legacy"]["status"], "orphan")  # no label: nothing loads it
+
+    def test_label_watchers(self):
+        def pod(ns, env, image="quay.io/kiwigrid/k8s-sidecar:1.30.0", init=False):
+            c = {"name": "sc", "image": image, "env": [{"name": k, "value": v} for k, v in env.items()]}
+            return {"metadata": {"namespace": ns, "name": "p-0", "ownerReferences": [{"kind": "StatefulSet", "name": "p"}]},
+                    "spec": {"initContainers" if init else "containers": [c]}}
+
+        class K:
+            def items(self, path, params=None, metadata_only=False):
+                return iter([pod("a", {"LABEL": "ds"}), pod("a", {"LABEL": "ds"}),                        # two replicas: one watch
+                             pod("b", {"LABEL": "sec", "RESOURCE": "secret", "NAMESPACE": "x, y"}, init=True),
+                             pod("c", {"LABEL": "other"}, image="example.org/app:1"),                      # not a k8s-sidecar
+                             pod("c", {"FOLDER": "/tmp"})] if path == "/api/v1/pods" else [])            # no LABEL
+
+        ws = OrphanScanner(K(), {}, FakeKor()).label_watchers()
+        self.assertEqual([(w["label"], w["value"], w["namespaces"], sorted(w["kinds"]), w["by"]) for w in ws], [
+            ("ds", None, frozenset({"a"}), ["ConfigMap"], "a/p (container sc)"),            # no NAMESPACE: its own
+            ("sec", None, frozenset({"x", "y"}), ["Secret"], "b/p (container sc)")])
+        hit = lambda kind, ns, labels: [s for s, _ in OrphanScanner.watched(ws, kind, ns, labels)]  # noqa: E731
+        self.assertEqual(hit("ConfigMap", "a", {"ds": "anything"}), ["sidecar"])
+        self.assertEqual(hit("ConfigMap", "z", {"ds": "1"}), [])      # another namespace
+        self.assertEqual(hit("Secret", "a", {"ds": "1"}), [])         # RESOURCE defaults to configmap
+        self.assertEqual(hit("Secret", "y", {"sec": ""}), ["sidecar"])
+        self.assertEqual(hit("ConfigMap", "a", {}), [])
+
     def test_builtin_protect_covers_self(self):
         self.assertEqual(self.by["Secret/apps/kube-drift-tls"]["status"], "protected")
 
     def test_config_ignore_and_metadata(self):
         self.assertEqual(self.by["StorageClass//longhorn-static"]["created"], "2026-04-01T10:00:00Z")
         self.assertEqual(self.res["kor_version"], "v0.6.9")
-        self.assertEqual(len(self.res["items"]), 14)
+        self.assertEqual(len(self.res["items"]), 15)
         self.assertEqual(self.res["warnings"], [])  # 404 on issuers is not a warning
 
 
@@ -156,6 +189,21 @@ class Rules(unittest.TestCase):
         self.assertEqual(rules["r"]["matches"], 1)
         self.assertEqual(ign["Job/backup/repo-maintain-1775037600"]["by"], "rule")
 
+    def test_label_and_name_contains_rules(self):
+        ign, rules = self.ignored(user=[{"id": "l", "kind": "ConfigMap", "label": "grafana_dashboard"},
+                                        {"id": "lv", "label": "grafana_dashboard=2"},
+                                        {"id": "n", "name_contains": "DASHBOARD"},
+                                        {"id": "kn", "kind": "ConfigMap", "name_contains": "dashboard"}])
+        self.assertEqual({k: rules[k]["matches"] for k in ("l", "lv", "n", "kn")}, {"l": 1, "lv": 0, "n": 3, "kn": 2})
+        self.assertEqual(ign["ConfigMap/monitoring/dashboard-nodes"]["rule"], "l")
+        self.assertEqual(ign["ConfigMap/monitoring/dashboard-legacy"]["rule"], "n")   # no label, but the name matches
+        self.assertEqual(ign["ClusterRoleBinding//legacy-dashboard"]["rule"], "n")    # any kind, any case
+
+    def test_protect_by_label(self):
+        cfg = {"orphans": {"protect": [{"label": "team=platform", "why": "platform team's"}]}}
+        by = {i["id"]: i for i in OrphanScanner(FakeOrphanK8s(), cfg, FakeKor(), self_namespace="apps").run()["items"]}
+        self.assertEqual(by["ConfigMap/monitoring/dashboard-nodes"]["protected"], "platform team's")
+
     def test_namespace_and_regex(self):
         ign, rules = self.ignored(user=[{"id": "r", "namespace": "apps", "name_regex": "-tls$"}])
         self.assertEqual(rules["r"]["matches"], 2)
@@ -164,7 +212,10 @@ class Rules(unittest.TestCase):
     def test_validate(self):
         self.assertEqual(validate_rule({"kind": "secret", "source": "cert-manager", "bogus": "x", "namespace": " "}),
                          {"kind": "Secret", "source": "cert-manager"})
-        for bad in ({}, {"namespace": ""}, {"name_regex": "("}, {"source": "x" * 300}):
+        self.assertEqual(validate_rule({"label": " app.kubernetes.io/name=web ", "name_contains": "dash"}),
+                         {"name_contains": "dash", "label": "app.kubernetes.io/name=web"})
+        self.assertEqual(validate_rule({"label": "grafana_dashboard"}), {"label": "grafana_dashboard"})
+        for bad in ({}, {"namespace": ""}, {"name_regex": "("}, {"source": "x" * 300}, {"label": "a b"}, {"label": "=1"}, {"label": "k=v=w"}):
             with self.assertRaises(ValueError):
                 validate_rule(bad)
 
@@ -177,7 +228,7 @@ class Persisted(unittest.TestCase):
             self.assertIsNone(main.OrphanState(Store(Path(tmp))).result)
             (Path(tmp) / "orphans.json").write_text(json.dumps(scan()))
             st = main.OrphanState(Store(Path(tmp)), config_rules=CFG["orphans"]["ignore"])
-            self.assertEqual(st.result["format"], 3)
+            self.assertEqual(st.result["format"], 4)
             self.assertEqual(st.snapshot()["summary"]["ignored"], 1)
 
 

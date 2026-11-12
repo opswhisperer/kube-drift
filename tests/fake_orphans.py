@@ -11,7 +11,8 @@ KOR_JSON = {
     "ConfigMap": {
         "apps": [{"name": "istio-ca-crl", "reason": "ConfigMap is not used in any pod or container"}],
         "web": [{"name": "web-assets-25thdt57cm", "reason": "ConfigMap is not used in any pod or container"}],
-        "monitoring": [{"name": "dashboard-legacy", "reason": "ConfigMap is not used in any pod or container"}],
+        "monitoring": [{"name": "dashboard-legacy", "reason": "ConfigMap is not used in any pod or container"},
+                       {"name": "dashboard-nodes", "reason": "ConfigMap is not used in any pod or container"}],
     },
     "Secret": {
         "apps": [{"name": "kube-drift-tls", "reason": "Secret is not used in any pod, container, or ingress"},
@@ -55,6 +56,9 @@ OBJECTS = {
     ("ConfigMap", "monitoring", "dashboard-legacy"): _obj(
         "v1", "ConfigMap", "monitoring", "dashboard-legacy", data={"nut.json": "{}"},
         metadata={"annotations": {"kubectl.kubernetes.io/last-applied-configuration": "{...}"}}),
+    # Grafana's sidecar loads it by label; nothing mounts it. dashboard-legacy above lost its label
+    ("ConfigMap", "monitoring", "dashboard-nodes"): _obj("v1", "ConfigMap", "monitoring", "dashboard-nodes", data={"nodes.json": "{}"},
+                                                         metadata={"labels": {"grafana_dashboard": "1", "team": "platform"}}),
     ("Secret", "apps", "kube-drift-tls"): _obj("v1", "Secret", "apps", "kube-drift-tls", type="kubernetes.io/tls",
                                                data={"tls.crt": "Zm9v", "tls.key": "YmFy"},
                                                metadata={"annotations": {"cert-manager.io/certificate-name": "kube-drift-tls"}}),
@@ -102,6 +106,14 @@ CLUSTER_ISSUERS = [{"metadata": {"name": "letsencrypt"},
                     "spec": {"acme": {"privateKeySecretRef": {"name": "letsencrypt"},
                                       "solvers": [{"dns01": {"cloudflare": {"apiTokenSecretRef": {"name": "cloudflare-api-token-secret"}}}}]}}}]
 
+PODS = [{"metadata": {"namespace": "monitoring", "name": "grafana-7d9f8b6c54-x2x4q",
+                      "ownerReferences": [{"kind": "ReplicaSet", "name": "grafana-7d9f8b6c54"}]},
+         "spec": {"containers": [
+             {"name": "grafana", "image": "docker.io/grafana/grafana:12.0.0"},
+             {"name": "grafana-sc-dashboard", "image": "quay.io/kiwigrid/k8s-sidecar:1.30.0",
+              "env": [{"name": "LABEL", "value": "grafana_dashboard"}, {"name": "LABEL_VALUE", "value": "1"},
+                      {"name": "NAMESPACE", "value": "ALL"}, {"name": "RESOURCE", "value": "both"}]}]}}]
+
 HELM_RELEASE_SECRETS = [{"metadata": {"namespace": "sandbox", "name": "sh.helm.release.v1.demo.v3",
                                       "labels": {"owner": "helm", "name": "demo", "status": "deployed", "version": "3"}}}]
 
@@ -143,6 +155,8 @@ class FakeOrphanK8s:
             return iter(GATEWAYS)
         if path.endswith("/clusterissuers"):
             return iter(CLUSTER_ISSUERS)
+        if path == "/api/v1/pods":
+            return iter(copy.deepcopy(PODS))
         if path.endswith("/issuers"):
             raise KubeError(404, "GET", path, '{"message":"not found"}')
         if (params or {}).get("labelSelector") == "owner=helm":

@@ -438,15 +438,18 @@ kube-drift's evidence (**In use**, **Recreated**, **Controller**, **Leftover**):
 | Status | Meaning |
 |---|---|
 | orphan | nothing uses or manages it. **Leftover** means the Helm release that created it is no longer installed, or it is another copy of a generated ConfigMap or Secret (`<name>-<kustomize hash>`) while a different copy is the one in use |
-| in use | kor is wrong: something it doesn't check uses it — a Gateway's TLS `certificateRefs`, a cert-manager issuer's secret refs |
+| in use | kor is wrong: something it doesn't check uses it — a Gateway's TLS `certificateRefs`, a cert-manager issuer's secret refs, a `k8s-sidecar` container that loads it by label (Grafana dashboards and datasources) |
 | managed | its owner would put it back if deleted: an installed Helm release, a cert-manager Certificate, Argo CD, a `managed-by` label. Remove it at the source instead. Or a **Controller** wrote it and no person or deploy tool did: it reads its own objects through the API, where kor can't see it |
 | protected | never gets a delete command: `system:*`/`kubeadm:*` objects, kubeadm and `kube-root-ca.crt` ConfigMaps, kube-drift itself, plus your `protect` rules |
 | ignored | you ignored it, or an ignore rule matches |
 
 **Ignore** a resource, or everything like it: the dialog offers rules built from your selection
 with live match counts — "Secrets issued by cert-manager (65)", "ConfigMaps in apps" — that
-also cover future findings. Rules match on `kind`, `namespace`, `name`, `name_regex` and `source`
-(the evidence: `cert-manager`, `gateway`, `cert-manager-issuer`, `helm`, `helm-leftover`,
+also cover future findings. The dialog also offers the labels your selection shares
+("ConfigMaps labelled grafana_dashboard=1") and **Name contains**, where you type part of a name and
+see how many findings it matches. Rules match on `kind`, `namespace`, `name`, `name_contains`,
+`name_regex`, `label` (`key` or `key=value`) and `source`
+(the evidence: `cert-manager`, `gateway`, `cert-manager-issuer`, `sidecar`, `helm`, `helm-leftover`,
 `argocd`, `managed-by:<name>`, `written-by:<manager>`, `superseded`). Rules made in the dashboard live on its PVC and can be removed
 under "ignore rules"; rules in the config file work the same way.
 
