@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-11-11
+
 ### Added
 
 - Orphans: **Controller** evidence. When an object's `managedFields` name a controller and no person or
@@ -14,7 +16,6 @@ git tags and on the GitHub releases page.
   it. This covers what has no owner reference and no telling label, such as a backup operator's
   maintenance Jobs or a gateway controller's Secrets. Ignore rules can match it: `source: written-by:<manager>`.
   Volumes and Pods are left out, and Kubernetes' own writes don't count.
-
 - Orphans: a ConfigMap or Secret that a `k8s-sidecar` container loads by label is **in use**, with the
   label and the workload that loads it as evidence (`source: sidecar`). That is how Grafana gets its
   dashboards and datasources: nothing mounts them, so kor reports every one as unused. kube-drift reads
