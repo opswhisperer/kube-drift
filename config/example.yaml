@@ -279,19 +279,26 @@ orphans:
   # Rule fields, all optional, every one you set must match:
   #   kind:       ConfigMap, Secret, RoleBinding, …
   #   namespace, name, name_regex
+  #   name_contains:  part of the name, anywhere in it, ignoring case — `dashboard`
+  #   label:          a label the object carries: `key` (any value) or `key=value`
   #   source:     what kube-drift found out about the object — the labels in the dashboard:
   #                 cert-manager           a cert-manager Certificate owns it
   #                 gateway                a Gateway uses it as a TLS certificate
   #                 cert-manager-issuer    a cert-manager Issuer uses it
+  #                 sidecar                a k8s-sidecar container loads it by label (Grafana dashboards)
   #                 helm                   an installed Helm release owns it
   #                 helm-leftover          its Helm release was uninstalled
   #                 argocd                 Argo CD manages it
   #                 managed-by:<name>      its app.kubernetes.io/managed-by label is <name>
+  #                 written-by:<manager>   the controller <manager> wrote it, and no person or deploy tool did
+  #                 superseded             another copy of the same generated ConfigMap/Secret is the one in use
   #   why:        your note, shown in the dashboard
   ignore:
     - { kind: ConfigMap, name_regex: '^istio-ca-(root-cert|crl)$', why: istiod writes these into every namespace }
     - { kind: ConfigMap, name: cnpg-default-monitoring, why: CloudNativePG writes this into every cluster namespace }
     # - { kind: Secret, source: cert-manager, why: cert-manager owns its certificates }
+    # - { kind: ConfigMap, label: grafana_dashboard, why: Grafana loads these by label }
+    # - { name_contains: dashboard, namespace: monitoring, why: dashboards }
 
   # ── protect ──────────────────────────────────────────────────────────────────────────
   # Objects that must never get a Delete command, even when they look orphaned. Same rule

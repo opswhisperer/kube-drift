@@ -6,6 +6,33 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- Orphans: **Controller** evidence. When an object's `managedFields` name a controller and no person or
+  deploy tool (kubectl, Helm, Argo CD, Flux…), the row says which controller wrote it and when, and is
+  **managed** instead of orphan: a controller reads its own objects through the API, where kor can't see
+  it. This covers what has no owner reference and no telling label, such as a backup operator's
+  maintenance Jobs or a gateway controller's Secrets. Ignore rules can match it: `source: written-by:<manager>`.
+  Volumes and Pods are left out, and Kubernetes' own writes don't count.
+
+- Orphans: a ConfigMap or Secret that a `k8s-sidecar` container loads by label is **in use**, with the
+  label and the workload that loads it as evidence (`source: sidecar`). That is how Grafana gets its
+  dashboards and datasources: nothing mounts them, so kor reports every one as unused. kube-drift reads
+  the sidecar's `LABEL`, `LABEL_VALUE`, `NAMESPACE` and `RESOURCE` settings from the running pods.
+- Orphans: ignore and protect rules can match a label (`label: grafana_dashboard` or
+  `label: grafana_dashboard=1`) and part of a name (`name_contains: dashboard`, ignoring case). The
+  Ignore dialog offers the labels your selection shares, and a **Name contains** row with a live count.
+  Each finding now lists its `labels`.
+
+### Changed
+
+- Orphans: another copy of a generated ConfigMap or Secret (`<name>-<hash>` from kustomize's
+  `configMapGenerator`/`secretGenerator`) is an **orphan** when a different copy is the one in use, even
+  if Argo CD or Helm still tracks it. It used to show as managed, "Argo CD puts it back on its next sync",
+  which is not true of a copy nothing renders any more. The evidence source is `superseded`.
+- The saved orphan scan is rescanned once after the upgrade, so the new evidence shows without waiting
+  for the next scheduled scan.
+
 ## [0.8.7] - 2026-11-07
 
 ### Fixed

@@ -155,7 +155,7 @@ button.danger:hover,button.danger:focus-visible{color:var(--major);border-color:
 .ev{margin:5px 0 0;padding:0;list-style:none;font-size:12.5px;color:var(--muted)}
 .ev li{display:flex;gap:10px;margin-top:3px}
 .tag{flex:none;width:76px;font-size:12px;font-weight:650;color:var(--faint)}
-.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag{color:var(--accent)} .ev .leftover .tag{color:var(--minor)} .ev .protected .tag{color:var(--unk)}
+.ev .in-use .tag{color:var(--ok)} .ev .recreated .tag,.ev .controller .tag{color:var(--accent)} .ev .leftover .tag{color:var(--minor)} .ev .protected .tag{color:var(--unk)}
 .kor{display:flex;gap:10px}
 
 /* config */
@@ -705,10 +705,10 @@ $('#rescan').addEventListener('click',async()=>{ $('#rescan').disabled=true; awa
 
 /* ------------------------------------------------------------------ orphaned resources */
 const OORDER = { orphan:0, managed:1, 'in-use':2, protected:3, ignored:4 };
-const OSEG = [['orphan','orphaned','--minor'],['in-use','in use (kor missed it)','--ok-bar'],['managed','managed (would come back)','--accent'],['protected','protected','--unk-bar'],['ignored','ignored','--line']];
-const BADGE = { 'in-use':['in use','Something uses it that kor does not check — kor is wrong here'], managed:['managed','Its owner would put it back if you deleted it'],
+const OSEG = [['orphan','orphaned','--minor'],['in-use','in use (kor missed it)','--ok-bar'],['managed','managed (an owner or a controller)','--accent'],['protected','protected','--unk-bar'],['ignored','ignored','--line']];
+const BADGE = { 'in-use':['in use','Something uses it that kor does not check — kor is wrong here'], managed:['managed','Its owner would put it back if you deleted it, or a controller wrote it and reads it through the API'],
   orphan:['orphan','Nothing uses or manages it'], protected:['protected','Never offered a delete command'], ignored:['ignored','Hidden from the counts'] };
-const TAG = { 'in-use':'In use', recreated:'Recreated', leftover:'Leftover', gone:'Gone?' };
+const TAG = { 'in-use':'In use', recreated:'Recreated', controller:'Controller', leftover:'Leftover', gone:'Gone?' };
 function age(iso){ if(!iso) return '—'; const d=(Date.now()-new Date(iso))/86400000; return d<1?Math.max(1,Math.round(d*24))+'h':d<60?Math.round(d)+'d':Math.round(d/30)+'mo'; }
 function ostatus(i){ return i.ignored?'ignored':i.status; }
 function toast(msg,ms=5000){ const t=$('#toast'); t.innerHTML=msg; t.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>t.hidden=true,ms); }
@@ -741,18 +741,23 @@ function label(i){ return `${i.kind} ${i.namespace?i.namespace+'/':''}${i.name}`
 
 /* ---- ignore rules: same matching as app/orphans.py rule_match ---- */
 const SRC = { gateway:'used by a Gateway (TLS)', 'cert-manager-issuer':'used by a cert-manager issuer', 'cert-manager':'issued by cert-manager',
-  helm:'owned by an installed Helm release', 'helm-leftover':'left over from an uninstalled Helm release', argocd:'managed by Argo CD' };
-const srcText=x=>SRC[x]||(x.startsWith('managed-by:')?'managed by '+x.slice(11):x);
+  helm:'owned by an installed Helm release', 'helm-leftover':'left over from an uninstalled Helm release', argocd:'managed by Argo CD',
+  superseded:'replaced by another copy of the same generated object', sidecar:'loaded by a sidecar that watches their label' };
+const srcText=x=>SRC[x]||(x.startsWith('managed-by:')?'managed by '+x.slice(11):x.startsWith('written-by:')?'written by '+x.slice(11):x);
 const plural=k=>/(s|x)$/.test(k)?k+'es':/[^aeiou]y$/.test(k)?k.slice(0,-1)+'ies':k+'s';
 function describeRule(r){
   return [r.kind?plural(r.kind):'Anything', r.source?srcText(r.source):'', r.namespace?`in ${r.namespace}`:'',
-    r.name?`named ${r.name}`:'', r.name_regex?`named /${r.name_regex}/`:''].filter(Boolean).join(' ');
+    r.label?`labelled ${r.label}`:'', r.name?`named ${r.name}`:'', r.name_contains?`with “${r.name_contains}” in the name`:'',
+    r.name_regex?`named /${r.name_regex}/`:''].filter(Boolean).join(' ');
 }
 function matchRule(r,i){
   if(r.kind && r.kind!==i.kind) return false;
   if(r.namespace && r.namespace!==i.namespace) return false;
   if(r.name && r.name!==i.name) return false;
   if(r.source && !(i.hints||[]).some(h=>h.source===r.source)) return false;
+  if(r.label){ const k=r.label.split('=')[0], eq=r.label.includes('='), v=r.label.slice(k.length+1), L=i.labels||{};
+    if(!(k in L) || (eq && String(L[k])!==v)) return false; }
+  if(r.name_contains && !i.name.toLowerCase().includes(String(r.name_contains).toLowerCase())) return false;
   if(r.name_regex){ try{ if(!new RegExp(r.name_regex).test(i.name)) return false; }catch{ return false; } }
   return true;
 }
@@ -762,9 +767,21 @@ function suggestRules(items){
   const common=[...new Set((items[0].hints||[]).map(h=>h.source))].filter(x=>x && x!=='gone' && items.every(i=>(i.hints||[]).some(h=>h.source===x)));
   const kind=kinds.size===1?[...kinds][0]:null, ns=nss.size===1?[...nss][0]:null;
   for(const x of common){ if(kind) add({kind, source:x}); add({source:x}); }
+  // labels every selected resource carries with the same value; not the ones that only say which release or pod made it
+  const L0=items[0].labels||{};
+  Object.keys(L0).sort().filter(k=>!NOISY_LABEL.test(k) && items.every(i=>(i.labels||{})[k]===L0[k])).slice(0,3)
+    .forEach(k=>add(kind?{kind, label:`${k}=${L0[k]}`}:{label:`${k}=${L0[k]}`}));
   if(kind && ns) add({kind, namespace:ns});
   if(ns) add({namespace:ns});
-  return out.slice(0,5);
+  return out.slice(0,8);
+}
+const NOISY_LABEL=/(^|\/)(pod-template-hash|controller-uid|job-name|version|chart|managed-by|heritage|release|instance)$/;
+// the longest run of characters every selected name shares: the starting point for "name contains"
+function commonPart(names){
+  const a=names[0]||''; if(names.length<2) return a.replace(/-[a-z0-9]{8,10}$/,'');
+  let best='';
+  for(let i=0;i<a.length;i++) for(let j=a.length;j>i+best.length;j--){ const t=a.slice(i,j); if(names.every(n=>n.includes(t))){ best=t; break; } }
+  return best.replace(/^[-.]+|[-.]+$/g,'');
 }
 async function doIgnore(ids){
   const items=ids.map(byId).filter(Boolean); if(!items.length) return;
@@ -773,12 +790,25 @@ async function doIgnore(ids){
     .concat(suggestRules(items).map(r=>({label:describeRule(r), rule:r, count:all.filter(i=>matchRule(r,i)).length})))
     // "Anything <source>" only earns a row when it reaches more than "<Kind>s <source>"
     .filter((x,k,a)=>!(x.rule && !x.rule.kind && x.rule.source && a.some(y=>y.rule?.kind && y.rule.source===x.rule.source && y.count===x.count)));
-  const r=await modal({title:`Ignore ${n===1?label(items[0]):n+' resources'}`, ok:'Ignore',
+  // last row: a rule typed here, "name contains …", optionally for one kind
+  const kinds=[...new Set(items.map(i=>i.kind))], oneKind=kinds.length===1?kinds[0]:null, NC=scopes.length;
+  const ncRule=()=>{ const t=($('#nc-text')?.value||'').trim(); if(!t) return null;
+    return ($('#nc-kind')?.checked && oneKind)?{kind:oneKind, name_contains:t}:{name_contains:t}; };
+  const p=modal({title:`Ignore ${n===1?label(items[0]):n+' resources'}`, ok:'Ignore',
     body:`<p>Ignored resources are hidden from the counts until you unignore them. A rule also covers matching resources found in later scans.</p>
-      <div class="scopes">${scopes.map((x,k)=>`<label><input type="radio" name="scope" value="${k}" ${k?'':'checked'}><span>${esc(x.label)}</span><span class="n">${x.count} now</span></label>`).join('')}</div>`,
+      <div class="scopes">${scopes.map((x,k)=>`<label><input type="radio" name="scope" value="${k}" ${k?'':'checked'}><span>${esc(x.label)}</span><span class="n">${x.count} now</span></label>`).join('')}
+        <label><input type="radio" name="scope" value="${NC}"><span>Name contains <input type="text" id="nc-text" value="${esc(commonPart(items.map(i=>i.name)))}" aria-label="part of the name" style="width:14em">
+          ${oneKind?`<span style="white-space:nowrap"><input type="checkbox" id="nc-kind" checked> only ${esc(plural(oneKind))}</span>`:''}</span><span class="n" id="nc-count"></span></label></div>`,
     input:'<input type="text" id="dlg-field" placeholder="note (optional) — why is this fine?">'});
+  const ncCount=()=>{ const rule=ncRule(); $('#nc-count').textContent=rule?`${all.filter(i=>matchRule(rule,i)).length} now`:'type part of a name'; };
+  $('#nc-text').oninput=()=>{ document.querySelector(`input[name=scope][value="${NC}"]`).checked=true; ncCount(); };
+  if($('#nc-kind')) $('#nc-kind').onchange=ncCount;
+  ncCount();
+  const r=await p;
   if(!r.ok) return;
-  const pick=scopes[+(document.querySelector('input[name=scope]:checked')?.value||0)];
+  const k=+(document.querySelector('input[name=scope]:checked')?.value||0);
+  if(k===NC && !ncRule()){ toast('Nothing ignored: “Name contains” was empty'); return; }
+  const pick=k===NC?(rule=>({rule, label:describeRule(rule), count:all.filter(i=>matchRule(rule,i)).length}))(ncRule()):scopes[k];
   if(pick.rule){ await call('/api/orphans/rules',{rule:pick.rule,note:r.value}); toast(`Rule added: ${esc(pick.label)} (${pick.count})`); }
   else { const res=await call('/api/orphans/ignore',{ids,note:r.value}); toast(`Ignored ${res.ignored}`); }
   ost.sel.clear(); await loadO();
@@ -805,7 +835,7 @@ async function doCommands(ids, action){
   if(action==='delete'){
     const inUse=used.filter(i=>i.status==='in-use'), managed=used.filter(i=>i.status==='managed');
     if(inUse.length) warns.push(`${inUse.length} are in use by something kor doesn't check (e.g. a Gateway's TLS certificate) — deleting breaks it.`);
-    if(managed.length) warns.push(`${managed.length} would be put back by their owner (Helm, cert-manager, an operator) — remove them there instead.`);
+    if(managed.length) warns.push(`${managed.length} are managed: their owner would put them back (Helm, cert-manager, an operator), or the controller that wrote them still reads them — remove them there instead.`);
     if(kinds.has('PersistentVolumeClaim')||kinds.has('PersistentVolume')) warns.push('Volumes: the backup is the manifest only, not the data. A PV with reclaimPolicy Delete loses its data.');
     if(kinds.has('CustomResourceDefinition')) warns.push('Deleting a CRD deletes every object of that type.');
   }

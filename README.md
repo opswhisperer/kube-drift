@@ -433,22 +433,39 @@ owner is garbage-collected with it, so it is never really orphaned — and `--ol
 nothing mid-rollout is flagged.
 
 Then it adds what kor doesn't check. Each row shows kor's reason (tagged **kor**) and
-kube-drift's evidence (**In use**, **Recreated**, **Leftover**):
+kube-drift's evidence (**In use**, **Recreated**, **Controller**, **Leftover**):
 
 | Status | Meaning |
 |---|---|
-| orphan | nothing uses or manages it. **Leftover** means the Helm release that created it is no longer installed |
-| in use | kor is wrong: something it doesn't check uses it — a Gateway's TLS `certificateRefs`, a cert-manager issuer's secret refs |
-| managed | its owner would put it back if deleted: an installed Helm release, a cert-manager Certificate, Argo CD, a `managed-by` label. Remove it at the source instead |
+| orphan | nothing uses or manages it. **Leftover** means the Helm release that created it is no longer installed, or it is another copy of a generated ConfigMap or Secret (`<name>-<kustomize hash>`) while a different copy is the one in use |
+| in use | kor is wrong: something it doesn't check uses it — a Gateway's TLS `certificateRefs`, a cert-manager issuer's secret refs, a `k8s-sidecar` container that loads it by label (Grafana dashboards and datasources) |
+| managed | its owner would put it back if deleted: an installed Helm release, a cert-manager Certificate, Argo CD, a `managed-by` label. Remove it at the source instead. Or a **Controller** wrote it and no person or deploy tool did: it reads its own objects through the API, where kor can't see it |
 | protected | never gets a delete command: `system:*`/`kubeadm:*` objects, kubeadm and `kube-root-ca.crt` ConfigMaps, kube-drift itself, plus your `protect` rules |
 | ignored | you ignored it, or an ignore rule matches |
 
 **Ignore** a resource, or everything like it: the dialog offers rules built from your selection
 with live match counts — "Secrets issued by cert-manager (65)", "ConfigMaps in apps" — that
-also cover future findings. Rules match on `kind`, `namespace`, `name`, `name_regex` and `source`
-(the evidence: `cert-manager`, `gateway`, `cert-manager-issuer`, `helm`, `helm-leftover`,
-`argocd`, `managed-by:<name>`). Rules made in the dashboard live on its PVC and can be removed
+also cover future findings. The dialog also offers the labels your selection shares
+("ConfigMaps labelled grafana_dashboard=1") and **Name contains**, where you type part of a name and
+see how many findings it matches. Rules match on `kind`, `namespace`, `name`, `name_contains`,
+`name_regex`, `label` (`key` or `key=value`) and `source`
+(the evidence: `cert-manager`, `gateway`, `cert-manager-issuer`, `sidecar`, `helm`, `helm-leftover`,
+`argocd`, `managed-by:<name>`, `written-by:<manager>`, `superseded`). Rules made in the dashboard live on its PVC and can be removed
 under "ignore rules"; rules in the config file work the same way.
+
+**Controller** evidence comes from the object's `managedFields`: the field managers that wrote
+to it. When none of them is a person or a deploy tool (kubectl, Helm, Argo CD, Flux, Terraform…)
+and one is a named controller, the row says which and when it last wrote — a backup operator's
+maintenance Jobs, a gateway controller's HMAC Secret. Kubernetes' own writes (a Job's status) don't
+count either way, volumes and Pods are left out (a provisioner or the kubelet always writes those),
+and client-library defaults such as `Go-http-client` name nobody, so they are no evidence. What an
+uninstalled operator left behind shows the same way: the date is the hint, and a managed row can
+still be exported and deleted.
+
+A **replaced copy** is what `configMapGenerator` and `secretGenerator` leave behind when nothing
+prunes: every edit makes `<name>-<hash>`, and the workload moves to the new one. Such a copy is an
+orphan even when Argo CD or Helm still tracks it, because nothing renders it any more. The lasting
+fix is pruning at the source (Argo CD: `automated.prune`).
 
 **Export** and **Delete** give you a script to copy into a terminal with your own kubectl
 access (needs `kubectl` and `jq`). It saves each object to

@@ -8,7 +8,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from app import main
-from app.orphans import OrphanScanner, apply_ignores, canonical_kind, commands, object_path, parse_kor, validate_rule
+from app.orphans import (OrphanScanner, apply_ignores, canonical_kind, commands, object_path, parse_kor, superseded,
+                         validate_rule, written_by)
 from app.store import Store
 from tests.fake_orphans import FakeKor, FakeOrphanK8s
 
@@ -66,13 +67,95 @@ class Classify(unittest.TestCase):
         self.assertEqual([h["type"] for h in tls], ["in-use", "recreated"])
         self.assertIn("Certificate kube-drift-tls", tls[1]["text"])
 
+    def test_superseded_copy_is_an_orphan_whoever_tracks_it(self):
+        old = self.by["ConfigMap/web/web-assets-25thdt57cm"]
+        self.assertEqual(old["status"], "orphan")
+        # the Argo CD tracking annotation would say "puts it back"; nothing renders this copy any more
+        self.assertEqual(old["hints"], [{"type": "leftover", "source": "superseded", "text":
+                                         "an older copy of generated ConfigMap web-assets: web-assets-8k9f6b5cmd replaced it and is the one in use"}])
+
+    def test_superseded(self):
+        meta = {("ConfigMap", "a", "site-8d5f7c2b9g"): {"creationTimestamp": "2026-01-03T00:00:00Z"},   # flagged, newest
+                ("ConfigMap", "a", "site-k4t6h2m9cf"): {"creationTimestamp": "2026-01-02T00:00:00Z"},   # in use
+                ("ConfigMap", "a", "site-f7b2d9g5k4"): {"creationTimestamp": "2026-01-01T00:00:00Z"},   # flagged, oldest
+                ("ConfigMap", "b", "site-f7b2d9g5k4"): {},                                              # other namespace
+                ("ConfigMap", "a", "site-settings"): {},                                                # no hash
+                ("Secret", "a", "creds-m6c4t8h2bd"): {}, ("Secret", "a", "creds-9g7k5f4d2c"): {},       # no copy in use
+                ("Role", "a", "site-8d5f7c2b9g"): {}, ("Role", "a", "site-k4t6h2m9cf"): {}}             # not generated
+        flagged = ["site-8d5f7c2b9g", "site-f7b2d9g5k4"]
+        found = ([{"kind": "ConfigMap", "namespace": "a", "name": n} for n in flagged + ["site-settings"]] +
+                 [{"kind": "ConfigMap", "namespace": "b", "name": "site-f7b2d9g5k4"}, {"kind": "Role", "namespace": "a", "name": "site-8d5f7c2b9g"}] +
+                 [{"kind": "Secret", "namespace": "a", "name": n} for n in ("creds-m6c4t8h2bd", "creds-9g7k5f4d2c")])
+        self.assertEqual(superseded(found, meta), {
+            # the copy in use is older than this one (the config was reverted): still not in use, but not "older"
+            ("ConfigMap", "a", "site-8d5f7c2b9g"): {"base": "site", "by": "site-k4t6h2m9cf", "newer": False},
+            ("ConfigMap", "a", "site-f7b2d9g5k4"): {"base": "site", "by": "site-k4t6h2m9cf", "newer": True}})
+
+    def test_written_by(self):
+        mf = lambda *names: {"managedFields": [{"manager": n, "time": f"2026-04-0{k + 1}T00:00:00Z"} for k, n in enumerate(names)]}  # noqa: E731
+        self.assertEqual(written_by("Secret", mf("gateway-controller", "cert-rotator")), ("cert-rotator", "2026-04-02T00:00:00Z"))
+        # Kubernetes' own writes say nothing either way; a status write isn't a write to the object
+        self.assertEqual(written_by("Job", mf("backup-operator", "kube-controller-manager")), ("backup-operator", "2026-04-01T00:00:00Z"))
+        self.assertIsNone(written_by("Job", mf("kube-controller-manager")))
+        self.assertIsNone(written_by("Job", {"managedFields": [{"manager": "backup-operator", "subresource": "status"}]}))
+        # a person, a deploy tool or an anonymous client wrote to it too: no evidence
+        for other in ("kubectl-client-side-apply", "argocd-controller", "helm", "kustomize-controller", "Go-http-client", "unknown"):
+            self.assertIsNone(written_by("Secret", mf("gateway-controller", other)), other)
+        # volumes are always written by a provisioner
+        self.assertIsNone(written_by("PersistentVolume", mf("csi-provisioner")))
+        self.assertIsNone(written_by("Secret", {}))
+
+    def test_controller_written_is_managed(self):
+        job = self.by["Job/backup/repo-maintain-1775037600"]
+        self.assertEqual(job["status"], "managed")
+        self.assertEqual([(h["type"], h["source"]) for h in job["hints"]], [("controller", "written-by:backup-operator")])
+        self.assertIn("backup-operator wrote it, last on 2026-04-01, and no person or deploy tool did", job["hints"][0]["text"])
+        self.assertEqual(self.by["Job/db/backup-verify"]["status"], "orphan")  # kubectl made that one
+        # a label or annotation that already says who puts it back is enough evidence
+        self.assertEqual([h["type"] for h in OrphanScanner.hints(
+            {"labels": {"app.kubernetes.io/managed-by": "tigera-operator"}, "managedFields": [{"manager": "operator"}]}, None, "Secret")],
+            ["recreated"])
+
+    def test_loaded_by_a_label_watching_sidecar_is_in_use(self):
+        dash = self.by["ConfigMap/monitoring/dashboard-nodes"]
+        self.assertEqual(dash["status"], "in-use")
+        self.assertEqual(dash["labels"], {"grafana_dashboard": "1", "team": "platform"})
+        self.assertEqual(dash["hints"], [{"type": "in-use", "source": "sidecar", "text":
+                                          "loaded by its label grafana_dashboard=1 into monitoring/grafana (container grafana-sc-dashboard) "
+                                          "(kor doesn't check label-watching sidecars)"}])
+        self.assertEqual(self.by["ConfigMap/monitoring/dashboard-legacy"]["status"], "orphan")  # no label: nothing loads it
+
+    def test_label_watchers(self):
+        def pod(ns, env, image="quay.io/kiwigrid/k8s-sidecar:1.30.0", init=False):
+            c = {"name": "sc", "image": image, "env": [{"name": k, "value": v} for k, v in env.items()]}
+            return {"metadata": {"namespace": ns, "name": "p-0", "ownerReferences": [{"kind": "StatefulSet", "name": "p"}]},
+                    "spec": {"initContainers" if init else "containers": [c]}}
+
+        class K:
+            def items(self, path, params=None, metadata_only=False):
+                return iter([pod("a", {"LABEL": "ds"}), pod("a", {"LABEL": "ds"}),                        # two replicas: one watch
+                             pod("b", {"LABEL": "sec", "RESOURCE": "secret", "NAMESPACE": "x, y"}, init=True),
+                             pod("c", {"LABEL": "other"}, image="example.org/app:1"),                      # not a k8s-sidecar
+                             pod("c", {"FOLDER": "/tmp"})] if path == "/api/v1/pods" else [])            # no LABEL
+
+        ws = OrphanScanner(K(), {}, FakeKor()).label_watchers()
+        self.assertEqual([(w["label"], w["value"], w["namespaces"], sorted(w["kinds"]), w["by"]) for w in ws], [
+            ("ds", None, frozenset({"a"}), ["ConfigMap"], "a/p (container sc)"),            # no NAMESPACE: its own
+            ("sec", None, frozenset({"x", "y"}), ["Secret"], "b/p (container sc)")])
+        hit = lambda kind, ns, labels: [s for s, _ in OrphanScanner.watched(ws, kind, ns, labels)]  # noqa: E731
+        self.assertEqual(hit("ConfigMap", "a", {"ds": "anything"}), ["sidecar"])
+        self.assertEqual(hit("ConfigMap", "z", {"ds": "1"}), [])      # another namespace
+        self.assertEqual(hit("Secret", "a", {"ds": "1"}), [])         # RESOURCE defaults to configmap
+        self.assertEqual(hit("Secret", "y", {"sec": ""}), ["sidecar"])
+        self.assertEqual(hit("ConfigMap", "a", {}), [])
+
     def test_builtin_protect_covers_self(self):
         self.assertEqual(self.by["Secret/apps/kube-drift-tls"]["status"], "protected")
 
     def test_config_ignore_and_metadata(self):
         self.assertEqual(self.by["StorageClass//longhorn-static"]["created"], "2026-04-01T10:00:00Z")
         self.assertEqual(self.res["kor_version"], "v0.6.9")
-        self.assertEqual(len(self.res["items"]), 13)
+        self.assertEqual(len(self.res["items"]), 15)
         self.assertEqual(self.res["warnings"], [])  # 404 on issuers is not a warning
 
 
@@ -101,6 +184,26 @@ class Rules(unittest.TestCase):
         ign, _ = self.ignored(config=cfg)
         self.assertEqual(ign["ConfigMap/apps/istio-ca-crl"], {"by": "config", "rule": "config-0", "note": "istiod", "at": None})
 
+    def test_written_by_rule(self):
+        ign, rules = self.ignored(user=[{"id": "r", "kind": "Job", "source": "written-by:backup-operator"}])
+        self.assertEqual(rules["r"]["matches"], 1)
+        self.assertEqual(ign["Job/backup/repo-maintain-1775037600"]["by"], "rule")
+
+    def test_label_and_name_contains_rules(self):
+        ign, rules = self.ignored(user=[{"id": "l", "kind": "ConfigMap", "label": "grafana_dashboard"},
+                                        {"id": "lv", "label": "grafana_dashboard=2"},
+                                        {"id": "n", "name_contains": "DASHBOARD"},
+                                        {"id": "kn", "kind": "ConfigMap", "name_contains": "dashboard"}])
+        self.assertEqual({k: rules[k]["matches"] for k in ("l", "lv", "n", "kn")}, {"l": 1, "lv": 0, "n": 3, "kn": 2})
+        self.assertEqual(ign["ConfigMap/monitoring/dashboard-nodes"]["rule"], "l")
+        self.assertEqual(ign["ConfigMap/monitoring/dashboard-legacy"]["rule"], "n")   # no label, but the name matches
+        self.assertEqual(ign["ClusterRoleBinding//legacy-dashboard"]["rule"], "n")    # any kind, any case
+
+    def test_protect_by_label(self):
+        cfg = {"orphans": {"protect": [{"label": "team=platform", "why": "platform team's"}]}}
+        by = {i["id"]: i for i in OrphanScanner(FakeOrphanK8s(), cfg, FakeKor(), self_namespace="apps").run()["items"]}
+        self.assertEqual(by["ConfigMap/monitoring/dashboard-nodes"]["protected"], "platform team's")
+
     def test_namespace_and_regex(self):
         ign, rules = self.ignored(user=[{"id": "r", "namespace": "apps", "name_regex": "-tls$"}])
         self.assertEqual(rules["r"]["matches"], 2)
@@ -109,7 +212,10 @@ class Rules(unittest.TestCase):
     def test_validate(self):
         self.assertEqual(validate_rule({"kind": "secret", "source": "cert-manager", "bogus": "x", "namespace": " "}),
                          {"kind": "Secret", "source": "cert-manager"})
-        for bad in ({}, {"namespace": ""}, {"name_regex": "("}, {"source": "x" * 300}):
+        self.assertEqual(validate_rule({"label": " app.kubernetes.io/name=web ", "name_contains": "dash"}),
+                         {"name_contains": "dash", "label": "app.kubernetes.io/name=web"})
+        self.assertEqual(validate_rule({"label": "grafana_dashboard"}), {"label": "grafana_dashboard"})
+        for bad in ({}, {"namespace": ""}, {"name_regex": "("}, {"source": "x" * 300}, {"label": "a b"}, {"label": "=1"}, {"label": "k=v=w"}):
             with self.assertRaises(ValueError):
                 validate_rule(bad)
 
@@ -122,7 +228,7 @@ class Persisted(unittest.TestCase):
             self.assertIsNone(main.OrphanState(Store(Path(tmp))).result)
             (Path(tmp) / "orphans.json").write_text(json.dumps(scan()))
             st = main.OrphanState(Store(Path(tmp)), config_rules=CFG["orphans"]["ignore"])
-            self.assertEqual(st.result["format"], 2)
+            self.assertEqual(st.result["format"], 4)
             self.assertEqual(st.snapshot()["summary"]["ignored"], 1)
 
 
