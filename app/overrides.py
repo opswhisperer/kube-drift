@@ -17,13 +17,16 @@ TRACKS = ("any", "major", "minor")
 # Source types each section can set, and their fields. The default (registry tags for images, an
 # ArtifactHub search for charts) is what you get with no `source`, so it isn't stored.
 SOURCES = {
-    "images": {"none": (), "github": ("repo", "version_regex", "prefer_tags")},
+    "images": {"none": (), "github": ("repo", "version_regex", "prefer_tags"),
+               "github-file": ("repo", "path", "version_regex", "branch")},
     "helm": {"none": (), "artifacthub": ("repo", "chart"), "oci": ("ref",), "github": ("repo", "version_regex", "prefer_tags")},
 }
 TEXT = {"images": ("name", "note"), "helm": ()}
 GITHUB_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 OCI_REF = re.compile(r"^[a-z0-9.-]+(:\d+)?(/[a-z0-9._-]+)+$")
 NAME = re.compile(r"^[\w.-]+$")
+FILE_PATH = re.compile(r"^[\w.-]+(/[\w.-]+)*$")
+BRANCH = re.compile(r"^[\w.-]+(/[\w.-]+)*$")
 SECRET_KEY = re.compile(r"secret|password|passwd|token|credential", re.I)
 HIDDEN = "(hidden)"
 
@@ -96,6 +99,23 @@ def _source(section: str, src) -> dict:
             out["version_regex"] = src["version_regex"]
         if src.get("prefer_tags"):
             out["prefer_tags"] = True
+    elif t == "github-file":
+        if not GITHUB_REPO.match(str(src.get("repo") or "")):
+            raise ValueError("source.repo: owner/name of a GitHub repository")
+        path = str(src.get("path") or "").strip().strip("/")
+        if not FILE_PATH.match(path) or ".." in path.split("/"):
+            raise ValueError("source.path: a file in that repository, e.g. helm/app/values.yaml")
+        vre = str(src.get("version_regex") or "")
+        try:
+            if not vre or re.compile(vre).groups < 1:
+                raise ValueError("source.version_regex: needs a group that captures the version, e.g. 'postgres:([\\d.]+)'")
+        except re.error as e:
+            raise ValueError(f"source.version_regex: bad regex: {e}") from None
+        out.update(repo=src["repo"], path=path, version_regex=vre)
+        if src.get("branch"):
+            if not BRANCH.match(str(src["branch"])):
+                raise ValueError("source.branch: a branch or tag name")
+            out["branch"] = str(src["branch"])
     elif t == "artifacthub":
         for k in ("repo", "chart"):
             if src.get(k) and not NAME.match(str(src[k])):

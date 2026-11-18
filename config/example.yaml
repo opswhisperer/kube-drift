@@ -124,6 +124,8 @@ argocd:
 # Symptoms and fixes for containers:
 #   - "Available" is a major version you can't move to yet   → track: major (or minor)
 #   - an image from a private vendor registry shows an error → source: { type: none }
+#   - an image another project pins (a chart's database) shows → source: { type: github-file, … }
+#     every newer registry tag, though you only move it when that project does
 #   - the row's name or link isn't helpful                   → name, ref, note
 #   - the Reference link is missing or for the wrong project → ref
 #
@@ -133,6 +135,9 @@ argocd:
 #
 #   track:   major | minor, as for helm
 #   source:  { type: none } to stop looking up newer tags
+#            { type: github-file, repo: <owner/name>, path: <file>, version_regex: <regex>, branch: <optional> }
+#              the version that file pins (first group of the first match), so the row is outdated
+#              only when the other project moves its pin
 #   name:    show this instead of the workload's name
 #   ref:     the link in the Reference column. Default, the first of:
 #              - with source { type: github }, that repo's releases page
@@ -151,6 +156,8 @@ argocd:
 images:
   # mongo:                      { track: major }                   # stay on 8.x
   # registry.k8s.io/kube-proxy: { track: minor, ref: https://kubernetes.io/releases/ }
+  # clickhouse/clickhouse-server: { source: { type: github-file, repo: acme/app, path: helm/app/values.yaml,
+  #                                           version_regex: 'clickhouse-server:([\d.]+)' } }
   # 're:^quay.io/acme/':        { source: { type: none }, note: vendor-managed, pulled with a license key }
 
 # ── probes ───────────────────────────────────────────────────────────────────────────────

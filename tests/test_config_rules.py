@@ -43,6 +43,12 @@ class Validate(unittest.TestCase):
         self.assertEqual(validate_rule("helm", {"source": {"type": "github", "repo": "n8n-io/n8n", "version_regex": r"n8n@(\d+\.\d+\.\d+)"}}),
                          {"source": {"type": "github", "repo": "n8n-io/n8n", "version_regex": r"n8n@(\d+\.\d+\.\d+)"}})
 
+    def test_github_file_source(self):
+        src = {"type": "github-file", "repo": "acme/app", "path": "/helm/app/values.yaml", "version_regex": r"db:([\d.]+)"}
+        self.assertEqual(validate_rule("images", {"source": src}),
+                         {"source": {**src, "path": "helm/app/values.yaml"}})
+        self.assertEqual(validate_rule("images", {"source": {**src, "branch": "release/1.x"}})["source"]["branch"], "release/1.x")
+
     def test_rejects(self):
         bad = [
             ("images", {"track": "patch"}, "track"),
@@ -55,6 +61,13 @@ class Validate(unittest.TestCase):
             ("images", {"source": {"type": "github", "repo": "a/b", "version_regex": r"\d+"}}, "group"),
             ("images", {"source": {"type": "github", "repo": "a/b", "version_regex": "("}}, "bad regex"),
             ("images", {"source": {"type": "none", "repo": "a/b"}}, "unknown field repo"),
+            ("images", {"source": {"type": "github-file", "repo": "a/b", "version_regex": "v(1)"}}, "source.path"),
+            ("images", {"source": {"type": "github-file", "repo": "a/b", "path": "x/../y", "version_regex": "v(1)"}}, "source.path"),
+            ("images", {"source": {"type": "github-file", "repo": "a/b", "path": "v.yaml"}}, "group"),
+            ("images", {"source": {"type": "github-file", "repo": "a/b", "path": "v.yaml", "version_regex": r"\d+"}}, "group"),
+            ("images", {"source": {"type": "github-file", "repo": "a/b", "path": "v.yaml", "version_regex": "v(1)",
+                                   "branch": "a b"}}, "source.branch"),
+            ("helm", {"source": {"type": "github-file", "repo": "a/b", "path": "v.yaml", "version_regex": "v(1)"}}, "source.type"),
             ("helm", {"source": {"type": "artifacthub", "chart": "x"}}, "source.repo"),
             ("helm", {"source": {"type": "oci", "ref": "https://ghcr.io/x"}}, "source.ref"),
             ("images", {"loose_suffix": "yes"}, "loose_suffix"),

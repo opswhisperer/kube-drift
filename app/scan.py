@@ -369,6 +369,8 @@ class Scanner:
                 host in self.cfg.get("registries", {}) or self.reg.has_credentials(host))
             source = icfg.get("source") or {"type": "registry"}
             ref = icfg.get("ref") or (source.get("type") == "github" and source.get("repo") and f"https://github.com/{source['repo']}/releases") \
+                or (source.get("type") == "github-file" and source.get("repo") and source.get("path")
+                    and upstream.github_file_link(source["repo"], source["path"], source.get("branch"))) \
                 or upstream.reference_url(host, repo)
             comp = {
                 "id": f"workload/{ns}/{name}/{repo.split('/')[-1]}",
@@ -504,6 +506,13 @@ class Scanner:
                 r = upstream.github_latest(src["repo"], src.get("version_regex"), src.get("prefer_tags", False))
                 comp.setdefault("ref", r["ref"] if r else comp.get("ref"))
                 self._apply_version(comp, r["version"] if r else None, r["ref"] if r else None)
+            elif t == "github-file":  # the version another project pins in a file
+                r = upstream.github_file_version(src["repo"], src["path"], src["version_regex"], src.get("branch"))
+                if r:
+                    self._apply_version(comp, r["version"], r["ref"])
+                else:
+                    comp.update(status="unknown", latest=None,
+                                note=(comp.get("note", "") + f" · no version in {src['repo']}/{src['path']}").strip(" ·"))
             elif t == "oci":  # Helm chart stored in an OCI registry: compare chart tags
                 host, repo, _, _ = upstream.split_image(src["ref"] + ":x")
                 tags = self.reg.tags(host, repo)
@@ -863,5 +872,6 @@ def apply_ignores(result: dict, ignores: dict, now: Optional[datetime] = None) -
 def upstream_clear_caches(reg: upstream.Registry):
     """Caches live for one scan so "latest" never goes stale across scans."""
     for fn in (upstream.artifacthub_package, upstream.artifacthub_search, upstream.github_latest,
+               upstream.github_file_version,
                upstream.k8s_stable, upstream.Registry.tags, upstream.Registry.digest):
         fn.cache_clear()
