@@ -622,6 +622,25 @@ def github_latest(owner_repo: str, version_regex: Optional[str] = None, prefer_t
     return {"version": version, "tag": tag, "ref": f"https://github.com/{owner_repo}/releases"}
 
 
+@functools.lru_cache(maxsize=256)
+def github_file_version(owner_repo: str, path: str, version_regex: str, branch: Optional[str] = None) -> Optional[dict]:
+    """The version a file in a GitHub repository pins: the first group of `version_regex`'s first
+    match in that file, on `branch` (default: the repository's default branch). None when nothing
+    matches. For an image that moves when another project moves it, such as the database a chart
+    ships: newer tags in the registry don't matter until that project's pin changes."""
+    q = f"?ref={urllib.parse.quote(branch, safe='')}" if branch else ""
+    r = request(f"{GH}/repos/{owner_repo}/contents/{urllib.parse.quote(path.strip('/'))}{q}",
+                headers={**_gh_headers(), "Accept": "application/vnd.github.raw+json"})
+    m = re.search(version_regex, r.body.decode("utf-8", "replace"), re.M)
+    if not m:
+        return None
+    return {"version": m.group(1) if m.groups() else m.group(0), "ref": github_file_link(owner_repo, path, branch)}
+
+
+def github_file_link(owner_repo: str, path: str, branch: Optional[str] = None) -> str:
+    return f"https://github.com/{owner_repo}/blob/{branch or 'HEAD'}/{path.strip('/')}"
+
+
 _projects: dict[str, Optional[str]] = {}  # "owner/name" -> its releases page, or None
 
 

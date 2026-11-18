@@ -572,9 +572,11 @@ SPEC: dict = {
             "track": {"enum": ["any", "major", "minor"], "description": "Only offer upgrades within the installed major (or minor) version."},
             "source": {"type": "object", "description": (
                 "Where newer versions come from; leave out for the default (images: the registry's tags; helm: an "
-                "ArtifactHub search by chart name). images: `{type: none}` or `{type: github, repo, version_regex?, prefer_tags?}`. "
+                "ArtifactHub search by chart name). images: `{type: none}`, `{type: github, repo, version_regex?, prefer_tags?}` or "
+                "`{type: github-file, repo, path, version_regex, branch?}` (the version another project pins in a file). "
                 "helm: also `{type: artifacthub, repo, chart?}` and `{type: oci, ref}`."),
-                "properties": {"type": {"enum": ["none", "github", "artifacthub", "oci"]}, "repo": {"type": "string"},
+                "properties": {"type": {"enum": ["none", "github", "github-file", "artifacthub", "oci"]}, "repo": {"type": "string"},
+                               "path": {"type": "string"}, "branch": {"type": "string"},
                                "chart": {"type": "string"}, "ref": {"type": "string"}, "version_regex": {"type": "string"},
                                "prefer_tags": {"type": "boolean"}}},
             "ref": {"type": "string", "format": "uri", "description": "http(s) link for the Release notes column."},

@@ -6,6 +6,13 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Added
+
+- Images: a `github-file` source, `{type: github-file, repo, path, version_regex, branch?}`. The row's
+  newest version is the one another project pins in a file on GitHub, such as the database image an
+  app's chart ships, so the row turns outdated only when that project moves its pin and not at every
+  new tag in the registry. Settable in the config file and in the dashboard's rule editor.
+
 ## [0.8.8] - 2026-11-11
 
 ### Added

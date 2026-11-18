@@ -528,3 +528,39 @@ class ChartMeta(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GithubFile(unittest.TestCase):
+    VALUES = b"clickhouse:\n  image: example/db-server:26.9.6.6@sha256:abc\nother:\n  image: example/db-server:1.0.0\n"
+
+    def setUp(self):
+        upstream.github_file_version.cache_clear()
+
+    def test_reads_the_pin_from_the_file(self):
+        with mock.patch.object(upstream, "request", return_value=HttpResp(200, {}, self.VALUES)) as req:
+            r = upstream.github_file_version("acme/app", "/helm/app/values.yaml", r"db-server:([\d.]+)")
+        self.assertEqual(r, {"version": "26.9.6.6", "ref": "https://github.com/acme/app/blob/HEAD/helm/app/values.yaml"})
+        url = req.call_args.args[0]
+        self.assertEqual(url, "https://api.github.com/repos/acme/app/contents/helm/app/values.yaml")
+        self.assertEqual(req.call_args.kwargs["headers"]["Accept"], "application/vnd.github.raw+json")
+
+    def test_branch_and_no_match(self):
+        with mock.patch.object(upstream, "request", return_value=HttpResp(200, {}, self.VALUES)) as req:
+            self.assertIsNone(upstream.github_file_version("acme/app", "values.yaml", r"postgres:([\d.]+)", "release/1.x"))
+        self.assertTrue(req.call_args.args[0].endswith("/contents/values.yaml?ref=release%2F1.x"))
+
+    def test_scanner_compares_with_the_pin(self):
+        from app.scan import Scanner
+        from tests.fake_k8s import FakeK8s
+        sc = Scanner(FakeK8s(), {})
+        src = {"type": "github-file", "repo": "acme/app", "path": "values.yaml", "version_regex": r"db-server:([\d.]+)"}
+        comp = {"id": "x", "image": "example/db-server:26.9.6.6", "installed": "26.9.6.6", "source": src, "note": ""}
+        for pin, status in (("26.9.6.6", "current"), ("26.10.5.57", "outdated"), ("26.8.1.1", "current")):
+            with self.subTest(pin=pin), mock.patch.object(upstream, "github_file_version",
+                                                          return_value={"version": pin, "ref": "https://github.com/acme/app"}):
+                done = sc.resolve(dict(comp))
+                self.assertEqual((done["status"], done["latest"]), (status, pin))
+        with mock.patch.object(upstream, "github_file_version", return_value=None):
+            done = sc.resolve(dict(comp))
+        self.assertEqual(done["status"], "unknown")
+        self.assertIn("no version in acme/app/values.yaml", done["note"])

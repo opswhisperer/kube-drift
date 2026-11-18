@@ -518,6 +518,7 @@ function describeSource(c){
     case 'artifacthub': return {html:`ArtifactHub chart ${link(`https://artifacthub.io/packages/helm/${encodeURIComponent(s.repo)}/${encodeURIComponent(chart)}`,`${s.repo}/${chart}`)}`};
     case 'artifacthub-search': return {html:`ArtifactHub ${link(`https://artifacthub.io/packages/search?kind=0&ts_query_web=${encodeURIComponent(chart)}`,`search for “${chart}”`)}`+(s.repo_url?` from ${link(s.repo_url,s.repo_url)}`:'')};
     case 'github': return {html:`GitHub releases of ${link(`https://github.com/${s.repo}/releases`,s.repo)}`};
+    case 'github-file': return {html:`the version pinned in ${link(`https://github.com/${s.repo}/blob/${s.branch||'HEAD'}/${s.path}`,`${s.repo}/${s.path}`)}`};
     case 'k8s': return 'Kubernetes release channel';
     case 'oci': return `chart tags at ${s.ref}`;
     case 'none': return 'not tracked (config)';
@@ -640,7 +641,7 @@ const GROUP_ORDER = { status:ORDER, update:{ major:0, minor:1, patch:2, other:3 
 const GROUP_KEY = { update:updateSize, owner:ghOwner, tagstyle:c=>c.category==='helm'?'chart version':!c.image_host?'':c.pinned_digest?'pinned digest':c.floating?'floating tag':'version tag' };
 // GitHub org/user behind a component: its GitHub release source, else a github.com reference link, else a ghcr.io image.
 function ghOwner(c){
-  if(c.source?.type==='github' && c.source.repo) return c.source.repo.split('/')[0].toLowerCase();
+  if((c.source?.type==='github' || c.source?.type==='github-file') && c.source.repo) return c.source.repo.split('/')[0].toLowerCase();
   for(const u of [c.ref,c.ref_ah]){ const m=/^https?:\/\/(?:www\.)?github\.com\/([^/?#]+)/i.exec(u||''); if(m) return m[1].toLowerCase(); }
   return c.image_host==='ghcr.io' && c.image_repo? c.image_repo.split('/')[0].toLowerCase() : '';
 }
@@ -970,6 +971,7 @@ function describeCfgSource(sec,s){
   switch(s.type){
     case 'none': return 'Newer versions not looked up';
     case 'github': return `From GitHub releases of ${esc(s.repo)}`+(s.version_regex?`, version from <code>${esc(s.version_regex)}</code>`:'');
+    case 'github-file': return `The version ${esc(s.repo)} pins in <code>${esc(s.path)}</code>`+(s.branch?` on ${esc(s.branch)}`:'')+`, from <code>${esc(s.version_regex)}</code>`;
     case 'artifacthub': return `From ArtifactHub ${esc(s.repo)}/${esc(s.chart||'(chart name)')}`;
     case 'oci': return `From chart tags at <code>${esc(s.ref)}</code>`;
     default: return `Source <code>${esc(JSON.stringify(s))}</code>`;
@@ -1029,7 +1031,7 @@ async function editRule(sec, {key='', rule={}, orig=null, note=''}={}){
   const S=SECTION[sec], s=rule.source||{}, t=s.type||'';
   const fileHas=k=>(cst.data?.[sec]||[]).some(e=>e.key===k && (e.from==='config'||e.replaces));
   const opt=(v,l,cur)=>`<option value="${v}" ${v===cur?'selected':''}>${l}</option>`;
-  const srcs=sec==='images'?[['','Newer tags in its registry (default)'],['github','GitHub releases'],['none','Don’t look it up']]
+  const srcs=sec==='images'?[['','Newer tags in its registry (default)'],['github','GitHub releases'],['github-file','The version a file on GitHub pins'],['none','Don’t look it up']]
     :[['','ArtifactHub search by chart name (default)'],['artifacthub','An ArtifactHub repository'],['oci','An OCI registry'],['github','GitHub releases'],['none','Don’t look it up']];
   const loose=rule.loose_suffix===true?'1':rule.loose_suffix===false?'0':'';
   const body=`${note?`<p>${note}</p>`:''}<div class="cform">
@@ -1038,8 +1040,12 @@ async function editRule(sec, {key='', rule={}, orig=null, note=''}={}){
     <label>Versions to offer <select id="cf-track">${opt('any','Any newer version',rule.track||'any')}${opt('minor','Same minor version only (patches)',rule.track)}${opt('major','Same major version only',rule.track)}</select>
       <span class="hint">The newest overall still shows as “outside your track”.</span></label>
     <label>Newer versions from <select id="cf-src">${srcs.map(([v,l])=>opt(v,l,t)).join('')}</select></label>
-    <label data-for="github">GitHub repository <input type="text" id="cf-gh" value="${esc(t==='github'?s.repo:'')}" placeholder="owner/name" spellcheck="false"></label>
-    <label data-for="github">Version from release names (optional) <input type="text" id="cf-vre" value="${esc(s.version_regex||'')}" placeholder="n8n@(\\d+\\.\\d+\\.\\d+)" spellcheck="false">
+    <label data-for="github github-file">GitHub repository <input type="text" id="cf-gh" value="${esc(t==='github'||t==='github-file'?s.repo:'')}" placeholder="owner/name" spellcheck="false"></label>
+    <div class="pair" data-for="github-file"><label>File <input type="text" id="cf-path" value="${esc(t==='github-file'?s.path:'')}" placeholder="helm/app/values.yaml" spellcheck="false"></label>
+      <label>Branch or tag (optional) <input type="text" id="cf-branch" value="${esc(t==='github-file'?s.branch||'':'')}" placeholder="the default branch" spellcheck="false"></label></div>
+    <label data-for="github-file">Version in the file <input type="text" id="cf-fre" value="${esc(t==='github-file'?s.version_regex:'')}" placeholder="postgres:([\\d.]+)" spellcheck="false">
+      <span class="hint">A regex whose first group is the version; the first match counts. The row is outdated only when this pin is newer than what runs.</span></label>
+    <label data-for="github">Version from release names (optional) <input type="text" id="cf-vre" value="${esc(t==='github'?s.version_regex||'':'')}" placeholder="n8n@(\\d+\\.\\d+\\.\\d+)" spellcheck="false">
       <span class="hint">A regex whose first group is the version, for releases named like <code>n8n@1.2.3</code>.</span></label>
     <div class="pair" data-for="artifacthub"><label>ArtifactHub repository <input type="text" id="cf-ah" value="${esc(t==='artifacthub'?s.repo:'')}" placeholder="bitnami" spellcheck="false"></label>
       <label>Chart (optional) <input type="text" id="cf-chart" value="${esc(s.chart||'')}" placeholder="the installed chart's name" spellcheck="false"></label></div>
@@ -1058,6 +1064,7 @@ async function editRule(sec, {key='', rule={}, orig=null, note=''}={}){
   if(v('cf-track')!=='any') out.track=v('cf-track');
   if(src==='none') out.source={type:'none'};
   else if(src==='github'){ out.source={type:'github',repo:v('cf-gh')}; if(v('cf-vre')) out.source.version_regex=v('cf-vre'); if(t==='github'&&s.prefer_tags) out.source.prefer_tags=true; }
+  else if(src==='github-file'){ out.source={type:'github-file',repo:v('cf-gh'),path:v('cf-path'),version_regex:v('cf-fre')}; if(v('cf-branch')) out.source.branch=v('cf-branch'); }
   else if(src==='artifacthub'){ out.source={type:'artifacthub',repo:v('cf-ah')}; if(v('cf-chart')) out.source.chart=v('cf-chart'); }
   else if(src==='oci') out.source={type:'oci',ref:v('cf-oci')};
   if(v('cf-ref')) out.ref=v('cf-ref');
