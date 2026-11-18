@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-11-17
+
 ### Added
 
 - Images: a `github-file` source, `{type: github-file, repo, path, version_regex, branch?}`. The row's
