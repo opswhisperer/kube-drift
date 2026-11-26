@@ -12,7 +12,8 @@ FLOATING = {
 }
 PRERELEASE_RE = re.compile(r"(rc|alpha|beta|dev|nightly|pre|preview|canary|snapshot|test|unstable)", re.I)
 CORE_RE = re.compile(r"(\d+(?:\.\d+)*)")
-SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+# A commit hash, bare or with a sha-/git-/commit- prefix (sha-5d3b1afaa755): a build of one commit, not a version.
+SHA_RE = re.compile(r"^(?:(?:sha|git|commit)[-_])?[0-9a-f]{7,40}$")
 # A build stamp: YYYYMMDD, optionally followed by a time (20261008-0811, 20261008T081130).
 DATE_RE = re.compile(r"((?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))(?:([-_.T])(\d{4,6}))?(?!\d)")
 

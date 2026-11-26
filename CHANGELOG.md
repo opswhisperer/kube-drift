@@ -6,6 +6,13 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- Images: a commit-hash tag with a prefix (`sha-5d3b1afaa755`, `git-…`, `commit-…`) is no longer read as a
+  version. kube-drift took the first digits of the hash as the version number, so an older build could show
+  as a major update (`sha-5d3b…` → `sha-8a36…`), most often on your own registry where tag suffixes are
+  compared loosely. Such tags are now treated like a bare hash: the row compares digests, not versions.
+
 ## [0.8.9] - 2026-11-17
 
 ### Added

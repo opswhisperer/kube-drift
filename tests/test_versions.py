@@ -20,10 +20,17 @@ class SplitImage(unittest.TestCase):
 
 class Versions(unittest.TestCase):
     def test_floating(self):
-        for t in ("latest", "main", "main-stable", "nightly", "87540e3", "dev"):
+        for t in ("latest", "main", "main-stable", "nightly", "87540e3", "dev",
+                  "sha-5d3b1afaa755", "git-87540e3", "commit_87540e3"):
             self.assertTrue(is_floating(t), t)
         for t in ("v1.2.3", "1.31.1", "9.0-alpine", "distroless-v1.39.1", "3.6.6-0", "0.0.161-589c824437-r1", "8"):
             self.assertFalse(is_floating(t), t)
+
+    def test_hash_tags_are_never_versions(self):
+        # 'sha-5d3b…' must not read as version 5 with a suffix, or 'sha-8a36…' looks like a major bump.
+        tags = ["sha-8a3670ed6a5c", "sha-5d3b1afaa755", "sha-1ff239e5edf5"]
+        for loose in (False, True):
+            self.assertIsNone(pick_latest("sha-5d3b1afaa755", tags, loose_suffix=loose)["outdated"])
 
     def test_cmp(self):
         self.assertLess(cmp_versions("v1.20.2", "1.21.2"), 0)
