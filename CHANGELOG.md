@@ -6,6 +6,8 @@ git tags and on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-11-26
+
 ### Fixed
 
 - Images: a commit-hash tag with a prefix (`sha-5d3b1afaa755`, `git-…`, `commit-…`) is no longer read as a
